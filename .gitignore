@@ -1,0 +1,15 @@
+node_modules/
+out/
+.vite/
+dist/
+coverage/
+*.log
+npm-debug.log*
+.DS_Store
+.env
+.env.*
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.eslintcache

@@ -1,0 +1,59 @@
+:root {
+  color: #f4efe9;
+  background: #1b1614;
+  font-family: 'Segoe UI', 'Helvetica Neue', sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  box-sizing: border-box;
+  max-width: 42rem;
+  min-height: 100vh;
+  padding: 2.5rem 2rem;
+}
+
+h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.lede,
+.policy {
+  margin: 0;
+  color: #d9cfc6;
+}
+
+dl {
+  margin: 1.5rem 0;
+}
+
+dl div {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: 0.75rem;
+  padding: 0.7rem 0;
+  border-top: 1px solid #3a312c;
+}
+
+dt {
+  color: #c4b8ae;
+}
+
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ok {
+  color: #b7e3c4;
+}
+
+.bad {
+  color: #ffb4a8;
+}

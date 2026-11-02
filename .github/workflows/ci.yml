@@ -1,0 +1,61 @@
+# Unsigned installers are uploaded as workflow artifacts.
+# This workflow does not create GitHub Releases, publish, or deploy.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 fakeroot rpm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Make unsigned installers
+        run: npm run make
+
+      - name: Upload unsigned installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: dance-library-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            out/make/**/*.exe
+            out/make/**/*.msi
+            out/make/**/*.dmg
+            out/make/**/*.deb
+            out/make/**/*.rpm
+            out/make/**/*.zip
