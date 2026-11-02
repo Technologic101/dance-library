@@ -11,29 +11,27 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "electron-forge start",
-    "start": "electron-forge start",
+    "install-binaries": "node scripts/install-runtime-binaries.cjs",
+    "dev": "node scripts/install-runtime-binaries.cjs && electron-forge start",
+    "start": "node scripts/install-runtime-binaries.cjs && electron-forge start",
     "lint": "eslint . && prettier --check . && tsc --noEmit",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/install-runtime-binaries.cjs && vitest run",
     "test:watch": "vitest",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
-    "rebuild:node": "npm rebuild better-sqlite3"
+    "package": "node scripts/install-runtime-binaries.cjs && electron-forge package",
+    "make": "node scripts/install-runtime-binaries.cjs && electron-forge make"
   },
   "dependencies": {
-    "@testing-library/dom": "^10.4.2",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "better-sqlite3": "^13.0.3",
     "electron-squirrel-startup": "^1.0.1",
-    "ffmpeg-static": "^5.3.0",
-    "ffprobe-static": "^3.1.0"
+    "ffmpeg-static": "^5.3.0"
   },
   "devDependencies": {
     "@electron-forge/cli": "7.11.2",
     "@electron-forge/maker-deb": "7.11.2",
     "@electron-forge/maker-dmg": "7.11.2",
-    "@electron-forge/maker-rpm": "7.11.2",
     "@electron-forge/maker-squirrel": "7.11.2",
     "@electron-forge/maker-zip": "7.11.2",
     "@electron-forge/plugin-auto-unpack-natives": "7.11.2",
@@ -41,6 +39,7 @@
     "@electron-forge/plugin-vite": "7.11.2",
     "@electron/fuses": "^1.8.0",
     "@eslint/js": "^9.36.0",
+    "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
     "@types/better-sqlite3": "^7.6.13",

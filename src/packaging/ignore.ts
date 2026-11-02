@@ -53,7 +53,7 @@ function hostBinaryId(host: PackagerHost): string {
 function isForeignNativeBinary(file: string, host: PackagerHost): boolean {
   const sqlite = /\/better-sqlite3\/prebuilds\/([a-z0-9-]+)\.node$/.exec(file);
   if (sqlite) return sqlite[1] !== hostBinaryId(host);
-  const ffprobe = /\/ffprobe-static\/bin\/([^/]+)\/([^/]+)\//.exec(file);
+  const ffprobe = /\/@ffprobe-installer\/([a-z0-9]+)-([a-z0-9]+)\//.exec(file);
   if (ffprobe) return ffprobe[1] !== host.platform || ffprobe[2] !== host.arch;
   return false;
 }

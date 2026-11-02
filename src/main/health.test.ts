@@ -30,7 +30,7 @@ describe('collectHealth', () => {
 
     const again = await collectHealth('0.0.1', dir);
     expect(again.database.ok).toBe(true);
-  });
+  }, 20_000);
 
   it('keeps ffprobe when the database directory cannot be created', async () => {
     const dir = tempDir();

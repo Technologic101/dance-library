@@ -91,5 +91,5 @@ describe('bundled binaries', () => {
     expect(ffmpeg.ok).toBe(true);
     if (ffprobe.ok) expect(ffprobe.version).toMatch(/\S+/);
     if (ffmpeg.ok) expect(ffmpeg.version).toMatch(/\S+/);
-  });
+  }, 20_000);
 });

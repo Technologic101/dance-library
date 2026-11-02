@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import ffmpegStatic from 'ffmpeg-static';
-import ffprobeStatic from 'ffprobe-static';
 
 export type ToolName = 'ffmpeg' | 'ffprobe';
 
@@ -22,7 +22,7 @@ export function binaryPathFromModule(mod: unknown, label: string): string {
 }
 
 export function resolveBundledTool(tool: ToolName): string {
-  return binaryPathFromModule(tool === 'ffmpeg' ? ffmpegStatic : ffprobeStatic, tool);
+  return binaryPathFromModule(tool === 'ffmpeg' ? ffmpegStatic : ffprobeInstaller, tool);
 }
 
 export function parseToolVersion(output: string, tool: ToolName): string | null {
@@ -35,6 +35,11 @@ export function ensureExecutable(binaryPath: string): void {
   const stat = fs.statSync(binaryPath);
   if (!stat.isFile()) throw new Error(`Bundled binary is not a file: ${binaryPath}`);
   if ((stat.mode & 0o111) === 0) fs.chmodSync(binaryPath, stat.mode | 0o755);
+  if (process.platform === 'darwin') {
+    // npm marks downloaded binaries as quarantined. Clearing that lets an
+    // unsigned ffprobe start instead of waiting on Gatekeeper.
+    spawnSync('xattr', ['-d', 'com.apple.quarantine', binaryPath], { stdio: 'ignore' });
+  }
 }
 
 export function readToolVersion(binaryPath: string, tool: ToolName): Promise<ToolProbe> {

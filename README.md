@@ -13,7 +13,7 @@ npm ci
 npm run dev
 ```
 
-`.npmrc` sets `legacy-peer-deps=true`. Current npm cannot resolve Vitest's optional peer dependencies without it, and CI relies on that file.
+`.npmrc` sets `legacy-peer-deps=true` because current npm cannot resolve Vitest's optional peers. It also sets `ignore-scripts=true` so npm does not compile `better-sqlite3` (the package already ships a prebuild; compiling it fails on GitHub's Windows image). `npm run dev`, `npm test`, and `npm run make` download the Electron and ffmpeg binaries when they are missing.
 
 | Script         | What it does                           |
 | -------------- | -------------------------------------- |
@@ -30,13 +30,13 @@ The catalog file is `catalog.sqlite` in Electron's user-data directory:
 
 It stores references and metadata only. The app never moves, modifies, or deletes video files. Schema changes go through the SQL migration runner in `src/main/db`. Drizzle is still optional for later phases.
 
-`better-sqlite3` is rebuilt for Electron when the app is started or packaged. Unit tests use the Node.js build of that module. If a test cannot load it after `npm run dev` or `npm run make`, run `npm run rebuild:node`.
+`better-sqlite3` is loaded from its N-API prebuild in both Node and Electron, so the app does not compile it.
 
-ffmpeg and ffprobe come from `ffmpeg-static` and `ffprobe-static`. The packager unpacks them from the asar archive so the installed app can execute them. `ffprobe-static` 3.1.0 does not ship a linux-arm64 binary; CI builds linux on x64. The ffmpeg binary is GPL-3.0-or-later. The project license is still undecided (Phase 6) and has to stay compatible with that before a public release.
+ffmpeg comes from `ffmpeg-static`, and ffprobe from `@ffprobe-installer/ffprobe`. The packager unpacks both from the asar archive so the installed app can execute them. The Linux installer is a `.deb`. An RPM is not built: `electron-installer-redhat` fails on the `rpmbuild` shipped with GitHub-hosted Ubuntu. The ffmpeg binary is GPL-3.0-or-later and ffprobe is LGPL-2.1. The project license is still undecided (Phase 6) and has to stay compatible with that before a public release.
 
 Installers are unsigned. Windows SmartScreen and macOS Gatekeeper will warn. Nothing in this repo sets a code-signing certificate, an update feed, or a Forge publisher. GitHub Actions (`.github/workflows/ci.yml`) runs lint, tests, and `npm run make` on Linux, Windows, and macOS, and uploads the unsigned installers as workflow artifacts. It does not create GitHub Releases.
 
-Native modules need a C++ toolchain when a prebuild is missing: Visual Studio Build Tools on Windows, Xcode command line tools on macOS, and `build-essential` plus `python3` on Linux. Debian and RPM packages also need `fakeroot` and `rpm`.
+Debian packages need `fakeroot`. A C++ toolchain is not required for the prebuilt catalog module.
 
 A packaged build can save a picture of the status window and exit. The path comes from the environment, not from the renderer:
 

@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 
 // Native and binary packages must be required at runtime from node_modules
 // (and unpacked from the asar), not folded into the main-process bundle.
-const runtimePackages = ['better-sqlite3', 'ffmpeg-static', 'ffprobe-static'];
+const runtimePackages = ['better-sqlite3', 'ffmpeg-static', '@ffprobe-installer/ffprobe'];
 
 function pinBundleName(fileName: string): Plugin {
   return {

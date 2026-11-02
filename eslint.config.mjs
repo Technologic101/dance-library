@@ -28,7 +28,7 @@ export default tseslint.config(
           patterns: [
             'better-sqlite3',
             'ffmpeg-static',
-            'ffprobe-static',
+            '@ffprobe-installer/ffprobe',
             'electron',
             'node:*',
             'fs',
@@ -47,13 +47,28 @@ export default tseslint.config(
           patterns: [
             'better-sqlite3',
             'ffmpeg-static',
-            'ffprobe-static',
+            '@ffprobe-installer/ffprobe',
             'node:*',
             'fs',
             'child_process',
           ],
         },
       ],
+    },
+  },
+  {
+    files: ['scripts/**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        process: 'readonly',
+        module: 'readonly',
+        __dirname: 'readonly',
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
   prettier,

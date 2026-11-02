@@ -1,7 +1,6 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerDMG } from '@electron-forge/maker-dmg';
-import { MakerRpm } from '@electron-forge/maker-rpm';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
@@ -23,19 +22,17 @@ const config: ForgeConfig = {
     prune: false,
     asar: {
       // Comma-separated so the auto-unpack plugin can wrap this in one brace group.
-      unpack: '**/ffmpeg-static/**,**/ffprobe-static/**,**/*.node',
+      unpack: '**/ffmpeg-static/**,**/@ffprobe-installer/**,**/*.node',
     },
     // The Vite plugin would otherwise keep only .vite and drop native modules.
     ignore: (file) => shouldPackagerIgnore(file, runtimePrefixes),
   },
-  rebuildConfig: {},
-  makers: [
-    new MakerSquirrel({}),
-    new MakerDMG({}),
-    new MakerZIP({}, ['darwin']),
-    new MakerRpm({}),
-    new MakerDeb({}),
-  ],
+  rebuildConfig: {
+    // The catalog uses better-sqlite3's N-API prebuilds. Rebuilding them needs
+    // a C++ toolchain and fails on GitHub's current Windows image.
+    ignoreModules: ['better-sqlite3'],
+  },
+  makers: [new MakerSquirrel({}), new MakerDMG({}), new MakerZIP({}, ['darwin']), new MakerDeb({})],
   plugins: [
     new VitePlugin({
       build: [

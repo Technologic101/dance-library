@@ -22,7 +22,7 @@ describe('shouldPackagerIgnore', () => {
 
   it('drops native binaries for other operating systems', () => {
     const host = { platform: 'linux', arch: 'x64', musl: false };
-    const hostPrefixes = [...prefixes, '/node_modules/ffprobe-static'];
+    const hostPrefixes = [...prefixes, '/node_modules/@ffprobe-installer/linux-x64'];
     expect(
       shouldPackagerIgnore(
         '/node_modules/better-sqlite3/prebuilds/linux-x64.node',
@@ -46,14 +46,14 @@ describe('shouldPackagerIgnore', () => {
     ).toBe(true);
     expect(
       shouldPackagerIgnore(
-        '/node_modules/ffprobe-static/bin/linux/x64/ffprobe',
+        '/node_modules/@ffprobe-installer/linux-x64/ffprobe',
         hostPrefixes,
         host,
       ),
     ).toBe(false);
     expect(
       shouldPackagerIgnore(
-        '/node_modules/ffprobe-static/bin/darwin/arm64/ffprobe',
+        '/node_modules/@ffprobe-installer/darwin-arm64/ffprobe',
         hostPrefixes,
         host,
       ),
@@ -75,7 +75,7 @@ describe('runtimePackagePrefixes', () => {
     const prefixes = runtimePackagePrefixes(projectRoot);
     expect(prefixes.some((prefix) => prefix.endsWith('/better-sqlite3'))).toBe(true);
     expect(prefixes.some((prefix) => prefix.endsWith('/ffmpeg-static'))).toBe(true);
-    expect(prefixes.some((prefix) => prefix.endsWith('/ffprobe-static'))).toBe(true);
+    expect(prefixes.some((prefix) => prefix.includes('@ffprobe-installer'))).toBe(true);
     expect(shouldPackagerIgnore('/node_modules/electron/cli.js', prefixes)).toBe(true);
     expect(shouldPackagerIgnore('/node_modules/vite/dist/node/index.js', prefixes)).toBe(true);
     expect(shouldPackagerIgnore('/.vite/renderer/main_window/index.html', prefixes)).toBe(false);
