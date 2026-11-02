@@ -24,3 +24,30 @@ const ffmpegName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
 if (!fs.existsSync(path.join(ffmpegDir, ffmpegName))) {
   run(path.join(ffmpegDir, 'install.js'));
 }
+
+// electron-winstaller's install script copies 7z-<arch>.exe to 7z.exe.
+// Squirrel cannot zip the app without that file, and ignore-scripts skips the copy.
+ensureSquirrel7Zip();
+
+function ensureSquirrel7Zip() {
+  let packageJson;
+  try {
+    packageJson = require.resolve('electron-winstaller/package.json');
+  } catch {
+    return;
+  }
+  const vendor = path.join(path.dirname(packageJson), 'vendor');
+  if (fs.existsSync(path.join(vendor, '7z.exe'))) return;
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const exe = path.join(vendor, `7z-${arch}.exe`);
+  const dll = path.join(vendor, `7z-${arch}.dll`);
+  if (!fs.existsSync(exe) || !fs.existsSync(dll)) {
+    if (process.platform === 'win32') {
+      console.error(`7-Zip for ${arch} is missing from electron-winstaller`);
+      process.exit(1);
+    }
+    return;
+  }
+  fs.copyFileSync(exe, path.join(vendor, '7z.exe'));
+  fs.copyFileSync(dll, path.join(vendor, '7z.dll'));
+}

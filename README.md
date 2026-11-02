@@ -32,7 +32,7 @@ It stores references and metadata only. The app never moves, modifies, or delete
 
 `better-sqlite3` is loaded from its N-API prebuild in both Node and Electron, so the app does not compile it.
 
-ffmpeg comes from `ffmpeg-static`, and ffprobe from `@ffprobe-installer/ffprobe`. The packager unpacks both from the asar archive so the installed app can execute them. The Linux installer is a `.deb`. An RPM is not built: `electron-installer-redhat` fails on the `rpmbuild` shipped with GitHub-hosted Ubuntu. The ffmpeg binary is GPL-3.0-or-later and ffprobe is LGPL-2.1. The project license is still undecided (Phase 6) and has to stay compatible with that before a public release.
+ffmpeg comes from `ffmpeg-static`, and ffprobe from `@ffprobe-installer/ffprobe`. The packager unpacks both from the asar archive so the installed app can execute them. The Linux installer is a `.deb`. An RPM is not built: `electron-installer-redhat` fails on the `rpmbuild` shipped with GitHub-hosted Ubuntu. macOS is a `.zip` of the app. The DMG tool needs a native module that is not compiled while install scripts are disabled. Windows is a Squirrel setup executable. The ffmpeg binary is GPL-3.0-or-later and ffprobe is LGPL-2.1. The project license is still undecided (Phase 6) and has to stay compatible with that before a public release.
 
 Installers are unsigned. Windows SmartScreen and macOS Gatekeeper will warn. Nothing in this repo sets a code-signing certificate, an update feed, or a Forge publisher. GitHub Actions (`.github/workflows/ci.yml`) runs lint, tests, and `npm run make` on Linux, Windows, and macOS, and uploads the unsigned installers as workflow artifacts. It does not create GitHub Releases.
 

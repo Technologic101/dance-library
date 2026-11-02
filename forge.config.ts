@@ -1,6 +1,5 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerDeb } from '@electron-forge/maker-deb';
-import { MakerDMG } from '@electron-forge/maker-dmg';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
@@ -32,7 +31,13 @@ const config: ForgeConfig = {
     // a C++ toolchain and fails on GitHub's current Windows image.
     ignoreModules: ['better-sqlite3'],
   },
-  makers: [new MakerSquirrel({}), new MakerDMG({}), new MakerZIP({}, ['darwin']), new MakerDeb({})],
+  makers: [
+    new MakerSquirrel({}),
+    // A zip of the .app. The DMG maker needs the macos-alias native module,
+    // which is not compiled while install scripts are disabled.
+    new MakerZIP({}, ['darwin']),
+    new MakerDeb({}),
+  ],
   plugins: [
     new VitePlugin({
       build: [
