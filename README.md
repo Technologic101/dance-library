@@ -36,6 +36,22 @@ ffmpeg comes from `ffmpeg-static`, and ffprobe from `@ffprobe-installer/ffprobe`
 
 Installers are unsigned. Windows SmartScreen and macOS Gatekeeper will warn. Nothing in this repo sets a code-signing certificate, an update feed, or a Forge publisher. GitHub Actions (`.github/workflows/ci.yml`) runs lint, tests, and `npm run make` on Linux, Windows, and macOS, and uploads the unsigned installers as workflow artifacts. It does not create GitHub Releases.
 
+### Download a build from CI
+
+These builds are not GitHub Releases. They sit on the Actions run that produced them.
+
+1. Open the repository on GitHub and go to **Actions**.
+2. Open a finished **CI** run (a green check on a pull request or on `main`).
+3. Scroll to **Artifacts** at the bottom of that run.
+4. Download the zip for your computer: `dance-library-windows-latest`, `dance-library-macos-latest`, or `dance-library-ubuntu-latest`.
+5. Unzip that download. The installer is inside.
+
+**Windows.** Run the file whose name ends in `Setup.exe`. SmartScreen says Windows protected your PC. Click **More info**, then **Run anyway**.
+
+**macOS.** Unzip the inner zip so you can see `Dance Library.app`. Right-click the app and choose **Open**, then confirm **Open**. The first double-click is blocked by Gatekeeper; right-click Open is the step that lets an unsigned app start.
+
+**Linux.** Install the `.deb` from the artifact (for example `sudo apt install ./dance-library_*_amd64.deb`).
+
 Debian packages need `fakeroot`. A C++ toolchain is not required for the prebuilt catalog module.
 
 A packaged build can save a picture of the status window and exit. The path comes from the environment, not from the renderer:
