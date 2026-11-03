@@ -24,13 +24,13 @@ describe('openCatalog', () => {
     const dbPath = catalogPath(path.join(dir, 'nested'));
     const db = openCatalog(dbPath);
     const health = readDatabaseHealth(db, dbPath);
-    expect(health).toEqual({ ok: true, schemaVersion: 1, path: dbPath });
+    expect(health).toEqual({ ok: true, schemaVersion: 2, path: dbPath });
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     expect(db.pragma('journal_mode', { simple: true })).toBe('wal');
     db.close();
 
     const reopened = openCatalog(dbPath);
-    expect(readDatabaseHealth(reopened, dbPath).schemaVersion).toBe(1);
+    expect(readDatabaseHealth(reopened, dbPath).schemaVersion).toBe(2);
     reopened.close();
     expect(fs.existsSync(dbPath)).toBe(true);
   });
@@ -42,7 +42,7 @@ describe('openCatalog', () => {
     db.prepare(`DELETE FROM app_meta WHERE key = 'catalog_policy'`).run();
     expect(readDatabaseHealth(db, dbPath)).toMatchObject({
       ok: false,
-      schemaVersion: 1,
+      schemaVersion: 2,
       error: 'Catalog policy is not references-only',
     });
     db.close();

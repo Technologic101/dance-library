@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { migration001 } from './migrations/001_init';
+import { migration002 } from './migrations/002_catalog';
 
 export type Migration = {
   id: number;
@@ -7,7 +8,7 @@ export type Migration = {
   up: (db: Database.Database) => void;
 };
 
-export const migrations: Migration[] = [migration001];
+export const migrations: Migration[] = [migration001, migration002];
 
 export function applyMigrations(db: Database.Database, pending: readonly Migration[]): string[] {
   const ordered = validateMigrations(pending);

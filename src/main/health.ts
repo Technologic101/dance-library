@@ -1,12 +1,19 @@
+import type Database from 'better-sqlite3';
 import type { AppHealth, DatabaseHealth, FfprobeHealth } from '../shared/api';
 import { autoUpdateStatus } from './autoUpdate';
 import { probeBundledFfprobe } from './binaries';
 import { catalogPath, openCatalog, readDatabaseHealth } from './db/catalog';
 
-export async function collectHealth(appVersion: string, userDataDir: string): Promise<AppHealth> {
+export async function collectHealth(
+  appVersion: string,
+  userDataDir: string,
+  existing?: Database.Database,
+): Promise<AppHealth> {
   const dbPath = catalogPath(userDataDir);
   const ffprobePromise = probeBundledFfprobe();
-  const database = openDatabaseHealth(dbPath);
+  const database = existing
+    ? readExistingDatabaseHealth(existing, dbPath)
+    : openDatabaseHealth(dbPath);
   const ffprobe = toFfprobeHealth(await ffprobePromise);
   return {
     appVersion,
@@ -14,6 +21,19 @@ export async function collectHealth(appVersion: string, userDataDir: string): Pr
     ffprobe,
     autoUpdate: autoUpdateStatus,
   };
+}
+
+function readExistingDatabaseHealth(db: Database.Database, dbPath: string): DatabaseHealth {
+  try {
+    return readDatabaseHealth(db, dbPath);
+  } catch (error) {
+    return {
+      ok: false,
+      schemaVersion: 0,
+      path: dbPath,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function openDatabaseHealth(dbPath: string): DatabaseHealth {
