@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import type { CaptureDateSource, ScanProgress, ScanSummary } from '../../shared/api';
-import { chooseCaptureDate, captureDateFromFilename } from './captureDate';
+import type { ScanProgress, ScanSummary } from '../../shared/api';
+import { chooseCaptureDate } from './captureDate';
+import { FULL_HASH_KIND } from './contentHash';
 import { pathsEqual } from './paths';
 import { clipError } from './process';
-import { createRepository, type CatalogRepository, type VideoIdentity } from './repository';
+import {
+  createRepository,
+  type CatalogRepository,
+  type LocationRecord,
+  type VideoRecord,
+} from './repository';
 import { thumbnailFileName } from './thumbnails';
 import { resolveLibraryPath, type Mount, type VolumeLocation } from './volumes';
 
@@ -36,6 +42,9 @@ export type ScanDeps = {
   walkVideos: (root: string) => AsyncIterable<string>;
   stat: (filePath: string) => Promise<IndexedStat>;
   hash: (filePath: string) => Promise<{ hash: string; kind: string }>;
+  /** True when the partial hash already covers every byte, so it can confirm a duplicate. */
+  hashCoversFile: (size: number) => boolean;
+  fullHash: (filePath: string) => Promise<string>;
   probe: (filePath: string) => Promise<ProbeFields>;
   writeThumbnail: (
     filePath: string,
@@ -53,6 +62,7 @@ export function emptyScanSummary(): ScanSummary {
     added: 0,
     updated: 0,
     unchanged: 0,
+    linked: 0,
     missing: 0,
     offline: 0,
     errors: 0,
@@ -65,14 +75,15 @@ export function mergeScanSummary(total: ScanSummary, part: ScanSummary): void {
   total.added += part.added;
   total.updated += part.updated;
   total.unchanged += part.unchanged;
+  total.linked += part.linked;
   total.missing += part.missing;
   total.offline += part.offline;
   total.errors += part.errors;
 }
 
 /**
- * Same-volume rename: one catalog row whose previous path is gone.
- * A second hard link keeps its own row when that path still exists.
+ * Same-volume rename: one location whose previous path is gone.
+ * A second hard link keeps its own location when that path still exists.
  */
 export function pickIdentityMatch<T extends { path: string }>(
   rows: readonly T[],
@@ -186,8 +197,8 @@ export async function scanLibrary(
     } catch (error) {
       summary.errors += 1;
       const message = clipError(error instanceof Error ? error.message : String(error));
-      const existing = repo.findByPath(file);
-      if (existing) repo.noteError(existing.id, message, generation, deps.now());
+      const existing = repo.findLocationByPath(file);
+      if (existing) repo.noteError(existing.videoId, message, deps.now());
     }
     await yieldNow();
   }
@@ -206,7 +217,7 @@ export async function scanLibrary(
   return summary;
 }
 
-type IndexOutcome = 'added' | 'updated' | 'unchanged';
+type IndexOutcome = 'added' | 'updated' | 'unchanged' | 'linked';
 
 async function indexFile(
   repo: CatalogRepository,
@@ -225,27 +236,16 @@ async function indexFile(
 
   const filename = fileNameOf(input.filePath);
   const identity =
-    stat.volumeId && stat.fileId ? repo.findByIdentity(stat.volumeId, stat.fileId) : [];
-  let row = pickIdentityMatch(identity, input.filePath, (candidate) => deps.exists(candidate));
-  if (!row) row = repo.findByPath(input.filePath);
-  if (row && input.seen.has(row.id)) row = null;
+    stat.volumeId && stat.fileId ? repo.findLocationsByIdentity(stat.volumeId, stat.fileId) : [];
+  let location = pickIdentityMatch(identity, input.filePath, (candidate) => deps.exists(candidate));
+  if (!location) location = repo.findLocationByPath(input.filePath);
+  if (location && input.seen.has(location.id)) location = null;
 
-  if (row && canSkipProbe(row, stat, deps)) {
-    const captured = fastCaptureDate(row, filename);
-    repo.touchVideo({
-      id: row.id,
-      libraryId: input.libraryId,
-      path: input.filePath,
-      filename,
-      volumeId: stat.volumeId,
-      fileId: stat.fileId,
-      capturedAt: captured.capturedAt,
-      capturedAtSource: captured.source,
-      generation: input.generation,
-      now: deps.now(),
-    });
-    input.seen.add(row.id);
-    return changedLocation(row, input.filePath, input.libraryId) ? 'updated' : 'unchanged';
+  const currentVideo = location ? repo.getVideo(location.videoId) : null;
+  if (location && currentVideo && canSkipProbe(location, currentVideo, stat, deps)) {
+    repo.updateLocation(locationWrite(location.id, location.videoId, input, stat, filename, deps));
+    input.seen.add(location.id);
+    return changedLocation(location, input.filePath, input.libraryId) ? 'updated' : 'unchanged';
   }
 
   let contentHash: string | null = null;
@@ -259,20 +259,166 @@ async function indexFile(
     hashError = clipError(error instanceof Error ? error.message : String(error));
   }
 
-  if (!row && contentHash) {
-    const candidates = repo.findByHash(contentHash, stat.size).filter((candidate) => {
-      if (input.seen.has(candidate.id)) return false;
-      if (pathsEqual(candidate.path, input.filePath)) return false;
-      return !deps.exists(candidate.path);
+  const replaced = Boolean(
+    currentVideo &&
+    contentHash &&
+    currentVideo.contentHash &&
+    currentVideo.contentHash !== contentHash,
+  );
+  let target = replaced ? null : currentVideo;
+  if (!target && contentHash) {
+    target = await confirmContentMatch(repo, deps, {
+      filePath: input.filePath,
+      hash: contentHash,
+      size: stat.size,
+      exceptVideoId: replaced ? currentVideo?.id : undefined,
     });
-    if (candidates.length === 1) row = candidates[0] ?? null;
   }
 
-  let probe: ProbeFields;
+  const probed = await probeFile(input.filePath, deps);
+  const captured = chooseCaptureDate({
+    metadataCreatedAt: probed.metadataCreatedAt,
+    filename,
+    fileCreatedAt: stat.birthtime,
+    fileModifiedAt: stat.mtime,
+  });
+  const now = deps.now();
+
+  if (target && location && location.videoId !== target.id) {
+    repo.updateLocation(locationWrite(location.id, target.id, input, stat, filename, deps));
+    input.seen.add(location.id);
+    return 'linked';
+  }
+
+  if (target && !location) {
+    const moved = claimGoneLocation(repo, deps, target.id, input.seen);
+    if (moved) {
+      repo.updateLocation(locationWrite(moved.id, target.id, input, stat, filename, deps));
+      input.seen.add(moved.id);
+      return 'updated';
+    }
+    const locationId = randomUUID();
+    repo.insertLocation(locationWrite(locationId, target.id, input, stat, filename, deps));
+    input.seen.add(locationId);
+    return 'linked';
+  }
+
+  const videoId = target?.id ?? randomUUID();
+  const thumbnailFile = await writeVideoThumbnail(
+    deps,
+    thumbsDir,
+    videoId,
+    input.filePath,
+    probed.durationMs,
+    target?.thumbnailFile ?? null,
+  );
+  const videoWrite = {
+    id: videoId,
+    contentHash,
+    contentHashKind,
+    fullHash: target?.fullHash ?? null,
+    fullHashKind: target?.fullHash ? FULL_HASH_KIND : null,
+    sizeBytes: stat.size,
+    durationMs: probed.durationMs,
+    width: probed.width,
+    height: probed.height,
+    videoCodec: probed.videoCodec,
+    container: extensionOf(filename),
+    capturedAt: captured.capturedAt,
+    capturedAtSource: captured.source,
+    metadataCreatedAt: probed.metadataCreatedAt,
+    metadataError: hashError ?? probed.error,
+    thumbnailFile,
+    now,
+  };
+  if (target) repo.updateVideoTechnical(videoWrite);
+  else repo.insertVideo(videoWrite);
+
+  if (location) {
+    repo.updateLocation(locationWrite(location.id, videoId, input, stat, filename, deps));
+    input.seen.add(location.id);
+    return replaced ? 'added' : 'updated';
+  }
+  const locationId = randomUUID();
+  repo.insertLocation(locationWrite(locationId, videoId, input, stat, filename, deps));
+  input.seen.add(locationId);
+  return 'added';
+}
+
+async function confirmContentMatch(
+  repo: CatalogRepository,
+  deps: ScanDeps,
+  input: { filePath: string; hash: string; size: number; exceptVideoId?: string },
+): Promise<VideoRecord | null> {
+  const candidates = repo
+    .findVideosByPartialHash(input.hash, input.size)
+    .filter((video) => video.id !== input.exceptVideoId);
+  if (candidates.length === 0) return null;
+
+  let confirmed: VideoRecord[];
+  if (deps.hashCoversFile(input.size)) {
+    confirmed = candidates;
+  } else {
+    const full = await deps.fullHash(input.filePath);
+    confirmed = [];
+    for (const candidate of candidates) {
+      const known = await knownFullHash(repo, deps, candidate);
+      if (known && known === full) confirmed.push(repo.getVideo(candidate.id) ?? candidate);
+    }
+    if (confirmed.length === 0) return null;
+    const canonical = collapseMatches(repo, confirmed, deps.now());
+    repo.setFullHash(canonical.id, full, FULL_HASH_KIND, deps.now());
+    return repo.getVideo(canonical.id);
+  }
+
+  return collapseMatches(repo, confirmed, deps.now());
+}
+
+async function knownFullHash(
+  repo: CatalogRepository,
+  deps: ScanDeps,
+  video: VideoRecord,
+): Promise<string | null> {
+  if (video.fullHash) return video.fullHash;
+  const sample = repo.locationsForVideo(video.id).find((location) => deps.exists(location.path));
+  if (!sample) return null;
+  const hash = await deps.fullHash(sample.path);
+  repo.setFullHash(video.id, hash, FULL_HASH_KIND, deps.now());
+  return hash;
+}
+
+function collapseMatches(
+  repo: CatalogRepository,
+  matches: readonly VideoRecord[],
+  now: string,
+): VideoRecord {
+  const ordered = [...matches].sort((left, right) =>
+    left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0,
+  );
+  const keep = ordered[0];
+  if (!keep) throw new Error('Duplicate match list was empty');
+  const drops = ordered.slice(1).map((video) => video.id);
+  if (drops.length > 0) repo.mergeVideos(keep.id, drops, now);
+  return repo.getVideo(keep.id) ?? keep;
+}
+
+function claimGoneLocation(
+  repo: CatalogRepository,
+  deps: ScanDeps,
+  videoId: string,
+  seen: ReadonlySet<string>,
+): LocationRecord | null {
+  const gone = repo
+    .locationsForVideo(videoId)
+    .filter((location) => !seen.has(location.id) && !deps.exists(location.path));
+  return gone.length === 1 ? (gone[0] ?? null) : null;
+}
+
+async function probeFile(filePath: string, deps: ScanDeps): Promise<ProbeFields> {
   try {
-    probe = await deps.probe(input.filePath);
+    return await deps.probe(filePath);
   } catch (error) {
-    probe = {
+    return {
       durationMs: null,
       width: null,
       height: null,
@@ -281,83 +427,69 @@ async function indexFile(
       error: clipError(error instanceof Error ? error.message : String(error)),
     };
   }
-  const captured = chooseCaptureDate({
-    metadataCreatedAt: probe.metadataCreatedAt,
-    filename,
-    fileCreatedAt: stat.birthtime,
-    fileModifiedAt: stat.mtime,
-  });
-  const id = row?.id ?? randomUUID();
-  const thumbName = thumbnailFileName(id);
-  let thumbnailFile = row?.thumbnailFile ?? null;
+}
+
+async function writeVideoThumbnail(
+  deps: ScanDeps,
+  thumbsDir: string,
+  videoId: string,
+  filePath: string,
+  durationMs: number | null,
+  existing: string | null,
+): Promise<string | null> {
+  const thumbName = thumbnailFileName(videoId);
   try {
-    const wrote = await deps.writeThumbnail(
-      input.filePath,
-      path.join(thumbsDir, thumbName),
-      probe.durationMs,
-    );
-    if (wrote) thumbnailFile = thumbName;
+    const wrote = await deps.writeThumbnail(filePath, path.join(thumbsDir, thumbName), durationMs);
+    if (wrote) return thumbName;
   } catch {
     // The video stays in the catalog. The next scan tries the thumbnail again.
   }
+  return existing;
+}
 
-  const technical = {
+function locationWrite(
+  id: string,
+  videoId: string,
+  input: { libraryId: string; generation: number; filePath: string },
+  stat: IndexedStat,
+  filename: string,
+  deps: ScanDeps,
+) {
+  return {
     id,
+    videoId,
     libraryId: input.libraryId,
     path: input.filePath,
     filename,
     volumeId: stat.volumeId,
     fileId: stat.fileId,
-    contentHash,
-    contentHashKind,
     sizeBytes: stat.size,
     mtimeNs: stat.mtimeNs,
-    durationMs: probe.durationMs,
-    width: probe.width,
-    height: probe.height,
-    videoCodec: probe.videoCodec,
-    container: extensionOf(filename),
-    capturedAt: captured.capturedAt,
-    capturedAtSource: captured.source,
-    metadataCreatedAt: probe.metadataCreatedAt,
     fileCreatedAt: isoOrNull(stat.birthtime),
     fileModifiedAt: isoOrNull(stat.mtime),
-    metadataError: hashError ?? probe.error,
-    thumbnailFile,
     generation: input.generation,
     now: deps.now(),
   };
-  if (row) repo.updateTechnical(technical);
-  else repo.insertVideo(technical);
-  input.seen.add(id);
-  return row ? 'updated' : 'added';
 }
 
-function canSkipProbe(video: VideoIdentity, stat: IndexedStat, deps: ScanDeps): boolean {
-  if (video.sizeBytes !== stat.size || video.mtimeNs !== stat.mtimeNs) return false;
+function canSkipProbe(
+  location: LocationRecord,
+  video: VideoRecord,
+  stat: IndexedStat,
+  deps: ScanDeps,
+): boolean {
+  if (location.sizeBytes !== stat.size || location.mtimeNs !== stat.mtimeNs) return false;
   if (!video.contentHash || video.metadataError) return false;
   if (video.durationMs == null && video.videoCodec == null) return false;
   if (!video.thumbnailFile || !deps.thumbnailExists(video.thumbnailFile)) return false;
   return true;
 }
 
-function fastCaptureDate(
-  video: VideoIdentity,
-  filename: string,
-): { capturedAt: string | null; source: CaptureDateSource | null } {
-  if (video.capturedAtSource === 'metadata' || video.capturedAtSource === 'file_time') {
-    return { capturedAt: video.capturedAt, source: video.capturedAtSource };
-  }
-  const fromName = captureDateFromFilename(filename);
-  if (fromName) return { capturedAt: fromName, source: 'filename' };
-  return { capturedAt: video.capturedAt, source: video.capturedAtSource };
-}
-
-function changedLocation(video: VideoIdentity, filePath: string, libraryId: string): boolean {
+function changedLocation(location: LocationRecord, filePath: string, libraryId: string): boolean {
   return (
-    !pathsEqual(video.path, filePath) ||
-    video.libraryId !== libraryId ||
-    video.presence !== 'present'
+    !pathsEqual(location.path, filePath) ||
+    location.libraryId !== libraryId ||
+    location.presence !== 'present'
   );
 }
 
@@ -397,7 +529,7 @@ function running(
 }
 
 function finishedMessage(label: string, summary: ScanSummary): string {
-  return `${label}: ${summary.added} new, ${summary.updated} updated, ${summary.unchanged} unchanged, ${summary.missing} missing.`;
+  return `${label}: ${summary.added} new, ${summary.linked} copies, ${summary.updated} updated, ${summary.unchanged} unchanged, ${summary.missing} missing.`;
 }
 
 function emit(

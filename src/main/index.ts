@@ -17,6 +17,9 @@ import {
   type RemoveLibraryResult,
   type ScanProgress,
   type ScanSummary,
+  type VideoChangeResult,
+  type VideoCounts,
+  type VideoListItem,
 } from '../shared/api';
 import { collectHealth } from './health';
 import { createLibraryService, type LibraryService } from './libraryService';
@@ -47,7 +50,7 @@ const createWindow = () => {
   const devServerUrl = rendererDevServerUrl();
   const mainWindow = new BrowserWindow({
     width: 1200,
-    height: 800,
+    height: 980,
     show: true,
     backgroundColor: '#1b1614',
     title: 'Dance Library',
@@ -80,6 +83,11 @@ const createWindow = () => {
   }
 };
 
+function stringIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
+
 function broadcastProgress(progress: ScanProgress): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(IpcChannels.scanProgress, progress);
@@ -97,7 +105,21 @@ function registerIpc(service: LibraryService): void {
   });
 
   ipcMain.handle(IpcChannels.listLibraries, () => service.listLibraries());
-  ipcMain.handle(IpcChannels.listVideos, () => service.listVideos());
+  ipcMain.handle(IpcChannels.listVideos, (_event, options: unknown): VideoListItem[] => {
+    const excluded =
+      typeof options === 'object' &&
+      options !== null &&
+      'excluded' in options &&
+      options.excluded === true;
+    return service.listVideos({ excluded });
+  });
+  ipcMain.handle(IpcChannels.countVideos, (): VideoCounts => service.countVideos());
+  ipcMain.handle(IpcChannels.excludeVideos, (_event, ids: unknown): Promise<VideoChangeResult> => {
+    return service.excludeVideos(stringIds(ids));
+  });
+  ipcMain.handle(IpcChannels.restoreVideos, (_event, ids: unknown): Promise<VideoChangeResult> => {
+    return service.restoreVideos(stringIds(ids));
+  });
 
   ipcMain.handle(IpcChannels.addLibraries, async (): Promise<AddLibrariesResult> => {
     const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];

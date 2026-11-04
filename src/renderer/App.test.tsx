@@ -24,10 +24,6 @@ const library: LibrarySummary = {
 
 const present: VideoListItem = {
   id: 'vid-1',
-  libraryId: 'lib',
-  libraryLabel: 'dance',
-  path: '/dance/lesson-basic.mp4',
-  filename: 'lesson-basic.mp4',
   title: null,
   displayTitle: 'lesson-basic.mp4',
   sizeBytes: 120 * 1024,
@@ -40,18 +36,45 @@ const present: VideoListItem = {
   presence: 'present',
   metadataError: null,
   thumbnailUrl: 'dance-thumb://thumbs/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jpg',
+  excluded: false,
+  locations: [
+    {
+      id: 'loc-1',
+      libraryId: 'lib',
+      libraryLabel: 'dance',
+      path: '/dance/lesson-basic.mp4',
+      filename: 'lesson-basic.mp4',
+      presence: 'present',
+    },
+    {
+      id: 'loc-2',
+      libraryId: 'lib',
+      libraryLabel: 'dance',
+      path: '/dance/lesson-basic-copy.mp4',
+      filename: 'lesson-basic-copy.mp4',
+      presence: 'present',
+    },
+  ],
 };
 
 const missing: VideoListItem = {
   ...present,
   id: 'vid-2',
-  filename: 'gone.mp4',
   displayTitle: 'gone.mp4',
-  path: '/dance/gone.mp4',
   durationMs: 5000,
   videoCodec: 'hevc',
   presence: 'missing',
   thumbnailUrl: null,
+  locations: [
+    {
+      id: 'loc-3',
+      libraryId: 'lib',
+      libraryLabel: 'dance',
+      path: '/dance/gone.mp4',
+      filename: 'gone.mp4',
+      presence: 'missing',
+    },
+  ],
 };
 
 function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
@@ -61,6 +84,9 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
     notifyViewReady: notify,
     listLibraries: async () => [library],
     listVideos: async () => [present, missing],
+    countVideos: async () => ({ visible: 2, excluded: 0 }),
+    excludeVideos: async () => ({ changed: 1 }),
+    restoreVideos: async () => ({ changed: 1 }),
     addLibraries: async () => ({ added: [library], skipped: [], scan: null }),
     removeLibrary: async () => ({ ok: true }),
     scanLibrary: async () => ({
@@ -69,6 +95,7 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
       added: 0,
       updated: 0,
       unchanged: 1,
+      linked: 0,
       missing: 0,
       offline: 0,
       errors: 0,
@@ -79,6 +106,7 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
       added: 0,
       updated: 0,
       unchanged: 1,
+      linked: 0,
       missing: 0,
       offline: 0,
       errors: 0,
@@ -104,6 +132,8 @@ describe('App', () => {
     expect(screen.getAllByText(/checking the runtime/i).length).toBeGreaterThan(0);
     expect(await screen.findByRole('heading', { name: 'lesson-basic.mp4' })).toBeTruthy();
     expect(screen.getByText('0:02 · 640x360 · h264 · 2024-06-01 15:04:05 · 120 KB')).toBeTruthy();
+    expect(screen.getByText('2 copies')).toBeTruthy();
+    expect(screen.getByText('Online · /dance/lesson-basic-copy.mp4')).toBeTruthy();
     expect(screen.getByText(/Missing/)).toBeTruthy();
     expect(
       screen.getByRole('img', { name: /lesson-basic\.mp4 thumbnail/ }).getAttribute('src'),
@@ -136,6 +166,17 @@ describe('App', () => {
     expect(addLibraries).toHaveBeenCalledOnce();
   });
 
+  it('removes the selected videos from the catalog', async () => {
+    const excludeVideos = vi.fn(async () => ({ changed: 2 }));
+    api({ excludeVideos });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select lesson-basic.mp4' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select gone.mp4' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from library (2)' }));
+    await waitFor(() => expect(excludeVideos).toHaveBeenCalledWith(['vid-1', 'vid-2']));
+  });
+
   it('rescans a folder', async () => {
     const scanLibrary = vi.fn(async () => ({
       libraries: 1,
@@ -143,6 +184,7 @@ describe('App', () => {
       added: 0,
       updated: 0,
       unchanged: 2,
+      linked: 0,
       missing: 0,
       offline: 0,
       errors: 0,

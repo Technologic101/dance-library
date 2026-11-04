@@ -23,7 +23,7 @@ describe('collectHealth', () => {
     expect(health.appVersion).toBe('0.0.1');
     expect(health.autoUpdate).toBe('disabled');
     expect(health.database.ok).toBe(true);
-    expect(health.database.schemaVersion).toBe(2);
+    expect(health.database.schemaVersion).toBe(3);
     expect(health.database.path).toBe(path.join(dir, 'catalog.sqlite'));
     expect(health.ffprobe.ok).toBe(true);
     if (health.ffprobe.ok) expect(health.ffprobe.version.length).toBeGreaterThan(0);

@@ -5,11 +5,13 @@ import type {
   DanceLibraryApi,
   LibrarySummary,
   ScanProgress,
+  VideoCounts,
   VideoListItem,
 } from '../shared/api';
 import { formatVideoMeta } from '../shared/format';
 
 type ViewMode = 'grid' | 'list';
+type CatalogView = 'library' | 'excluded';
 
 export function App() {
   const api = window.danceLibrary;
@@ -29,6 +31,9 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [healthError, setHealthError] = useState<string | null>(null);
   const [libraries, setLibraries] = useState<LibrarySummary[] | null>(null);
   const [videos, setVideos] = useState<VideoListItem[] | null>(null);
+  const [counts, setCounts] = useState<VideoCounts>({ visible: 0, excluded: 0 });
+  const [catalogView, setCatalogView] = useState<CatalogView>('library');
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
@@ -53,11 +58,12 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
 
   useEffect(() => {
     let active = true;
-    Promise.all([api.listLibraries(), api.listVideos()])
-      .then(([nextLibraries, nextVideos]) => {
+    Promise.all([api.listLibraries(), api.listVideos({ excluded: false }), api.countVideos()])
+      .then(([nextLibraries, nextVideos, nextCounts]) => {
         if (!active) return;
         setLibraries(nextLibraries);
         setVideos(nextVideos);
+        setCounts(nextCounts);
       })
       .catch((caught: unknown) => {
         if (active) setLoadError(messageOf(caught));
@@ -79,10 +85,16 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     void api.notifyViewReady();
   }, [api, busy, libraries, videos, health, healthError]);
 
-  async function reload(): Promise<void> {
-    const [nextLibraries, nextVideos] = await Promise.all([api.listLibraries(), api.listVideos()]);
+  async function reload(view: CatalogView = catalogView): Promise<void> {
+    const [nextLibraries, nextVideos, nextCounts] = await Promise.all([
+      api.listLibraries(),
+      api.listVideos({ excluded: view === 'excluded' }),
+      api.countVideos(),
+    ]);
     setLibraries(nextLibraries);
     setVideos(nextVideos);
+    setCounts(nextCounts);
+    setSelected(new Set());
   }
 
   async function runTask(task: () => Promise<void>): Promise<void> {
@@ -125,6 +137,45 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     await runTask(async () => {
       const result = await api.removeLibrary(libraryId);
       if (!result.ok && result.message !== 'Cancelled.') setNotice(result.message);
+    });
+  }
+
+  async function showCatalog(view: CatalogView): Promise<void> {
+    setCatalogView(view);
+    setLoadError(null);
+    try {
+      await reload(view);
+    } catch (caught) {
+      setLoadError(messageOf(caught));
+    }
+  }
+
+  function toggleOne(id: string): void {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll(ids: readonly string[]): void {
+    setSelected((current) => (current.size === ids.length ? new Set() : new Set(ids)));
+  }
+
+  async function onExclude(): Promise<void> {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    await runTask(async () => {
+      await api.excludeVideos(ids);
+    });
+  }
+
+  async function onRestore(): Promise<void> {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    await runTask(async () => {
+      await api.restoreVideos(ids);
     });
   }
 
@@ -194,6 +245,22 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             <h2>
               {videos ? `${videos.length} ${videos.length === 1 ? 'video' : 'videos'}` : 'Videos'}
             </h2>
+            <div className="view-toggle" role="group" aria-label="Catalog">
+              <button
+                type="button"
+                aria-pressed={catalogView === 'library'}
+                onClick={() => void showCatalog('library')}
+              >
+                Library
+              </button>
+              <button
+                type="button"
+                aria-pressed={catalogView === 'excluded'}
+                onClick={() => void showCatalog('excluded')}
+              >
+                Excluded{counts.excluded > 0 ? ` (${counts.excluded})` : ''}
+              </button>
+            </div>
             <div className="view-toggle" role="group" aria-label="Layout">
               <button type="button" aria-pressed={view === 'grid'} onClick={() => setView('grid')}>
                 Grid
@@ -218,13 +285,51 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
           {notice ? <p role="status">{notice}</p> : null}
           {loadError ? <p role="alert">{loadError}</p> : null}
           {videos === null && !loadError ? <p role="status">Checking the runtime…</p> : null}
+          {videos && videos.length > 0 ? (
+            <div className="selection-bar">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={selected.size === videos.length}
+                  onChange={() => toggleAll(videos.map((video) => video.id))}
+                />
+                Select all
+              </label>
+              {catalogView === 'library' ? (
+                <button
+                  type="button"
+                  onClick={() => void onExclude()}
+                  disabled={busy || selected.size === 0}
+                >
+                  Remove from library{selected.size > 0 ? ` (${selected.size})` : ''}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void onRestore()}
+                  disabled={busy || selected.size === 0}
+                >
+                  Restore{selected.size > 0 ? ` (${selected.size})` : ''}
+                </button>
+              )}
+            </div>
+          ) : null}
           {videos && videos.length === 0 ? (
-            <p className="empty">No videos yet. Add a folder and the scan will fill this list.</p>
+            <p className="empty">
+              {catalogView === 'excluded'
+                ? 'Nothing is excluded. Removed videos show up here and can be restored.'
+                : 'No videos yet. Add a folder and the scan will fill this list.'}
+            </p>
           ) : null}
           {videos && videos.length > 0 ? (
             <ul className={view === 'grid' ? 'video-grid' : 'video-list'}>
               {videos.map((video) => (
-                <VideoCard key={video.id} video={video} />
+                <VideoCard
+                  key={video.id}
+                  video={video}
+                  selected={selected.has(video.id)}
+                  onToggle={() => toggleOne(video.id)}
+                />
               ))}
             </ul>
           ) : null}
@@ -241,9 +346,26 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   );
 }
 
-function VideoCard({ video }: { video: VideoListItem }) {
+function VideoCard({
+  video,
+  selected,
+  onToggle,
+}: {
+  video: VideoListItem;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const copies = video.locations.length;
   return (
     <li className={video.presence === 'missing' ? 'video missing' : 'video'}>
+      <label className="select-video">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          aria-label={`Select ${video.displayTitle}`}
+        />
+      </label>
       {video.thumbnailUrl ? (
         <img src={video.thumbnailUrl} alt={`${video.displayTitle} thumbnail`} />
       ) : (
@@ -255,9 +377,18 @@ function VideoCard({ video }: { video: VideoListItem }) {
         <h3>{video.displayTitle}</h3>
         <p>{formatVideoMeta(video)}</p>
         <p className="video-source">
-          {video.libraryLabel}
+          {copies > 1 ? `${copies} copies` : (video.locations[0]?.libraryLabel ?? 'No copies')}
           {video.presence === 'missing' ? ' · Missing' : ''}
         </p>
+        {copies > 1 ? (
+          <ul className="copy-list">
+            {video.locations.map((location) => (
+              <li key={location.id}>
+                {location.presence === 'missing' ? 'Missing' : 'Online'} · {location.path}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {video.metadataError ? <p className="video-error">{video.metadataError}</p> : null}
       </div>
     </li>

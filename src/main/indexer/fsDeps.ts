@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { partialContentHash } from './contentHash';
+import { fullContentHash, partialContentHash, partialHashCoversFile } from './contentHash';
 import { probeVideo } from './ffprobe';
 import type { IndexedStat, ScanDeps } from './scan';
 import { writeThumbnail } from './thumbnails';
@@ -38,6 +38,8 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
       const hashed = await partialContentHash(filePath);
       return { hash: hashed.hash, kind: hashed.kind };
     },
+    hashCoversFile: partialHashCoversFile,
+    fullHash: fullContentHash,
     probe: probeVideo,
     writeThumbnail,
     thumbnailExists(fileName) {

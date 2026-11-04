@@ -91,6 +91,10 @@ function fakeDeps(input: {
       if (!file) throw new Error('missing');
       return { hash: file.hash, kind: 'test' };
     },
+    hashCoversFile: () => true,
+    fullHash: async () => {
+      throw new Error('full hash was not required');
+    },
     probe: async (filePath) => {
       probes.push(filePath);
       return probeResult;
@@ -142,8 +146,8 @@ describe('scanLibrary', () => {
     expect(summary).toMatchObject({ discovered: 1, added: 1, errors: 0, offline: 0 });
     expect(fake.probes).toEqual(['D:\\dance\\lesson.mp4']);
     const row = db.prepare(`SELECT * FROM videos`).get() as Record<string, unknown>;
+    const location = db.prepare(`SELECT * FROM video_locations`).get() as Record<string, unknown>;
     expect(row).toMatchObject({
-      filename: 'lesson.mp4',
       size_bytes: 1200,
       duration_ms: 1500,
       width: 320,
@@ -153,10 +157,16 @@ describe('scanLibrary', () => {
       captured_at: '2024-06-01T15:04:05.000Z',
       captured_at_source: 'metadata',
       content_hash: 'abc',
-      volume_id: volume,
-      file_id: '7',
       title: null,
       favorite: 0,
+      excluded: 0,
+    });
+    expect(location).toMatchObject({
+      video_id: row.id,
+      path: 'D:\\dance\\lesson.mp4',
+      filename: 'lesson.mp4',
+      volume_id: volume,
+      file_id: '7',
       presence: 'present',
     });
     expect(row.thumbnail_file).toMatch(/\.jpg$/);
@@ -195,10 +205,13 @@ describe('scanLibrary', () => {
     expect(second).toMatchObject({ added: 0, updated: 1, unchanged: 0, missing: 0 });
     expect(renamed.probes).toEqual([]);
     const row = db.prepare(`SELECT * FROM videos`).get() as Record<string, unknown>;
+    const location = db.prepare(`SELECT path, filename, presence FROM video_locations`).get() as {
+      path: string;
+      filename: string;
+      presence: string;
+    };
     expect(row).toMatchObject({
       id,
-      path: 'D:\\dance\\warmup.mp4',
-      filename: 'warmup.mp4',
       title: 'Warmup',
       notes: 'keep me',
       favorite: 1,
@@ -207,6 +220,10 @@ describe('scanLibrary', () => {
       level: 'Beginner',
       event_name: 'Congress',
       event_date: '2024-01-01',
+    });
+    expect(location).toEqual({
+      path: 'D:\\dance\\warmup.mp4',
+      filename: 'warmup.mp4',
       presence: 'present',
     });
     expect(videoRow(db)).toHaveLength(1);
@@ -255,24 +272,19 @@ describe('scanLibrary', () => {
     const summary = await scanLibrary(db, 'lib', moved.deps, { thumbsDir: tempDir() });
     expect(summary.added).toBe(0);
     expect(summary.missing).toBe(0);
-    const row = db
-      .prepare(`SELECT id, path, file_id, title, notes, presence FROM videos`)
-      .get() as {
+    const row = db.prepare(`SELECT id, title, notes FROM videos`).get() as {
       id: string;
-      path: string;
-      file_id: string;
       title: string;
       notes: string;
+    };
+    const location = db.prepare(`SELECT path, file_id, presence FROM video_locations`).get() as {
+      path: string;
+      file_id: string;
       presence: string;
     };
-    expect(row).toEqual({
-      id,
-      path: 'E:\\dance\\lesson.mp4',
-      file_id: '99',
-      title: 'Warmup',
-      notes: 'keep me',
-      presence: 'present',
-    });
+    expect(row).toEqual({ id, title: 'Warmup', notes: 'keep me' });
+    expect(location).toEqual({ path: 'E:\\dance\\lesson.mp4', file_id: '99', presence: 'present' });
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM videos`).get()).toEqual({ count: 1 });
   });
 
   it('does not steal metadata when the same content still exists at the old path', async () => {
@@ -289,7 +301,7 @@ describe('scanLibrary', () => {
     };
     const first = fakeDeps({ directories: ['D:\\dance'], mounts, files: [original] });
     await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
-    db.prepare(`UPDATE videos SET title = 'Original' WHERE path = ?`).run(original.path);
+    db.prepare(`UPDATE videos SET title = 'Original'`).run();
 
     const copied = fakeDeps({
       directories: ['D:\\dance'],
@@ -307,15 +319,15 @@ describe('scanLibrary', () => {
       ],
     });
     const summary = await scanLibrary(db, 'lib', copied.deps, { thumbsDir: tempDir() });
-    expect(summary.added).toBe(1);
-    const rows = db.prepare(`SELECT path, title FROM videos ORDER BY path`).all() as {
+    expect(summary.added).toBe(0);
+    expect(summary.linked).toBe(1);
+    const paths = db.prepare(`SELECT path FROM video_locations ORDER BY path`).all() as {
       path: string;
-      title: string | null;
     }[];
-    expect(rows).toEqual([
-      { path: 'D:\\dance\\copy.mp4', title: null },
-      { path: 'D:\\dance\\lesson.mp4', title: 'Original' },
-    ]);
+    const title = db.prepare(`SELECT title FROM videos`).get() as { title: string };
+    expect(paths).toEqual([{ path: 'D:\\dance\\copy.mp4' }, { path: 'D:\\dance\\lesson.mp4' }]);
+    expect(title.title).toBe('Original');
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM videos`).get()).toEqual({ count: 1 });
   });
 
   it('marks a file missing when the folder is online and the file is gone', async () => {
@@ -340,19 +352,22 @@ describe('scanLibrary', () => {
     };
     const first = fakeDeps({ directories: ['D:\\dance'], mounts, files: [kept, gone] });
     await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
-    db.prepare(`UPDATE videos SET title = 'Gone', notes = 'keep me' WHERE path = ?`).run(gone.path);
+    db.prepare(
+      `UPDATE videos SET title = 'Gone', notes = 'keep me'
+       WHERE id = (SELECT video_id FROM video_locations WHERE path = ?)`,
+    ).run(gone.path);
 
     const second = fakeDeps({ directories: ['D:\\dance'], mounts, files: [kept] });
     for (const name of first.thumbs) second.thumbs.add(name);
     const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
     expect(summary.missing).toBe(1);
     const row = db
-      .prepare(`SELECT title, notes, presence FROM videos WHERE path = ?`)
-      .get(gone.path) as {
-      title: string;
-      notes: string;
-      presence: string;
-    };
+      .prepare(
+        `SELECT v.title AS title, v.notes AS notes, loc.presence AS presence
+         FROM videos v JOIN video_locations loc ON loc.video_id = v.id
+         WHERE loc.path = ?`,
+      )
+      .get(gone.path) as { title: string; notes: string; presence: string };
     expect(row).toEqual({ title: 'Gone', notes: 'keep me', presence: 'missing' });
   });
 
@@ -370,7 +385,7 @@ describe('scanLibrary', () => {
     };
     const first = fakeDeps({ directories: ['D:\\dance'], mounts, files: [file] });
     await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
-    db.prepare(`UPDATE videos SET title = 'Warmup' WHERE path = ?`).run(file.path);
+    db.prepare(`UPDATE videos SET title = 'Warmup'`).run();
 
     const offline = fakeDeps({ directories: [], mounts: [], files: [] });
     const summary = await scanLibrary(db, 'lib', offline.deps, { thumbsDir: tempDir() });
@@ -379,12 +394,13 @@ describe('scanLibrary', () => {
     const library = db.prepare(`SELECT availability FROM libraries WHERE id = 'lib'`).get() as {
       availability: string;
     };
-    const video = db.prepare(`SELECT title, presence FROM videos`).get() as {
-      title: string;
+    const video = db.prepare(`SELECT title FROM videos`).get() as { title: string };
+    const presence = db.prepare(`SELECT presence FROM video_locations`).get() as {
       presence: string;
     };
     expect(library.availability).toBe('offline');
-    expect(video).toEqual({ title: 'Warmup', presence: 'present' });
+    expect(video.title).toBe('Warmup');
+    expect(presence.presence).toBe('present');
   });
 
   it('follows the library when the same volume comes back on another drive letter', async () => {
@@ -417,13 +433,11 @@ describe('scanLibrary', () => {
       path: string;
       availability: string;
     };
-    const video = db.prepare(`SELECT id, path, title FROM videos`).get() as {
-      id: string;
-      path: string;
-      title: string;
-    };
+    const video = db.prepare(`SELECT id, title FROM videos`).get() as { id: string; title: string };
+    const location = db.prepare(`SELECT path FROM video_locations`).get() as { path: string };
     expect(library).toEqual({ path: 'E:\\dance', availability: 'online' });
-    expect(video).toEqual({ id, path: 'E:\\dance\\lesson.mp4', title: 'Warmup' });
+    expect(video).toEqual({ id, title: 'Warmup' });
+    expect(location.path).toBe('E:\\dance\\lesson.mp4');
   });
 
   it('does not mark files missing when the folder cannot be read', async () => {
@@ -449,7 +463,7 @@ describe('scanLibrary', () => {
     const summary = await scanLibrary(db, 'lib', unreadable.deps, { thumbsDir: tempDir() });
     expect(summary.errors).toBe(1);
     expect(summary.missing).toBe(0);
-    const video = db.prepare(`SELECT presence FROM videos`).get() as { presence: string };
+    const video = db.prepare(`SELECT presence FROM video_locations`).get() as { presence: string };
     const library = db.prepare(`SELECT last_error AS lastError FROM libraries`).get() as {
       lastError: string;
     };
@@ -478,6 +492,118 @@ describe('scanLibrary', () => {
     expect(summary).toMatchObject({ unchanged: 1, added: 0, updated: 0 });
     expect(second.probes).toEqual([]);
     expect(emptyScanSummary().added).toBe(0);
+  });
+
+  it('keeps an excluded video hidden when it and another copy are scanned again', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db, 'D:\\dance');
+    const original = {
+      path: 'D:\\dance\\lesson.mp4',
+      size: 40,
+      mtimeNs: '1',
+      fileId: '1',
+      volumeId: volume,
+      hash: 'same',
+    };
+    const first = fakeDeps({ directories: ['D:\\dance'], mounts, files: [original] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+    db.prepare(`UPDATE videos SET title = 'Not dance', excluded = 1 WHERE id = ?`).run(id);
+
+    const again = fakeDeps({
+      directories: ['D:\\dance'],
+      mounts,
+      files: [
+        original,
+        {
+          path: 'D:\\dance\\copy.mp4',
+          size: 40,
+          mtimeNs: '1',
+          fileId: '2',
+          volumeId: volume,
+          hash: 'same',
+        },
+      ],
+    });
+    again.thumbs.add(`${id}.jpg`);
+    const summary = await scanLibrary(db, 'lib', again.deps, { thumbsDir: tempDir() });
+    expect(summary.added).toBe(0);
+    expect(summary.linked).toBe(1);
+    const videos = db.prepare(`SELECT id, title, excluded FROM videos`).all() as {
+      id: string;
+      title: string;
+      excluded: number;
+    }[];
+    const paths = db.prepare(`SELECT path FROM video_locations ORDER BY path`).all();
+    expect(videos).toEqual([{ id, title: 'Not dance', excluded: 1 }]);
+    expect(paths).toEqual([{ path: 'D:\\dance\\copy.mp4' }, { path: 'D:\\dance\\lesson.mp4' }]);
+  });
+
+  it('confirms a large-file duplicate with a full hash and rejects a partial collision', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db, 'D:\\dance');
+    const original = {
+      path: 'D:\\dance\\lesson.mp4',
+      size: 9_000_000,
+      mtimeNs: '1',
+      fileId: '1',
+      volumeId: volume,
+      hash: 'partial',
+    };
+    const first = fakeDeps({ directories: ['D:\\dance'], mounts, files: [original] });
+    first.deps.hashCoversFile = () => false;
+    const fullHashes = new Map<string, string>([
+      [original.path, 'full-a'],
+      ['D:\\dance\\same.mp4', 'full-a'],
+      ['D:\\dance\\different.mp4', 'full-b'],
+    ]);
+    const calls: string[] = [];
+    first.deps.fullHash = async (filePath) => {
+      calls.push(filePath);
+      return fullHashes.get(filePath) ?? 'missing';
+    };
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    expect(calls).toEqual([]);
+
+    const same = fakeDeps({
+      directories: ['D:\\dance'],
+      mounts,
+      files: [original, { ...original, path: 'D:\\dance\\same.mp4', fileId: '2' }],
+    });
+    same.deps.hashCoversFile = () => false;
+    same.deps.fullHash = async (filePath) => {
+      calls.push(filePath);
+      return fullHashes.get(filePath) ?? 'missing';
+    };
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+    same.thumbs.add(`${id}.jpg`);
+    calls.length = 0;
+    const linked = await scanLibrary(db, 'lib', same.deps, { thumbsDir: tempDir() });
+    expect(linked.added).toBe(0);
+    expect(linked.linked).toBe(1);
+    expect(calls).toEqual(['D:\\dance\\same.mp4', original.path]);
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM videos`).get()).toEqual({ count: 1 });
+    expect(db.prepare(`SELECT full_hash FROM videos`).get()).toEqual({ full_hash: 'full-a' });
+
+    const collision = fakeDeps({
+      directories: ['D:\\dance'],
+      mounts,
+      files: [
+        original,
+        { ...original, path: 'D:\\dance\\same.mp4', fileId: '2' },
+        { ...original, path: 'D:\\dance\\different.mp4', fileId: '3' },
+      ],
+    });
+    collision.deps.hashCoversFile = () => false;
+    collision.deps.fullHash = async (filePath) => fullHashes.get(filePath) ?? 'missing';
+    collision.thumbs.add(`${id}.jpg`);
+    const split = await scanLibrary(db, 'lib', collision.deps, { thumbsDir: tempDir() });
+    expect(split.added).toBe(1);
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM videos`).get()).toEqual({ count: 2 });
+    const titles = db.prepare(`SELECT title FROM videos WHERE id = ?`).get(id) as { title: null };
+    expect(titles.title).toBeNull();
   });
 });
 

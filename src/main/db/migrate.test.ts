@@ -104,11 +104,12 @@ describe('applyMigrations', () => {
 
 describe('migrate', () => {
   it('ships a contiguous list and applies it', () => {
-    expect(migrations.map((migration) => migration.id)).toEqual([1, 2]);
+    expect(migrations.map((migration) => migration.id)).toEqual([1, 2, 3]);
     expect(migrations[0]?.name).toBe('001_init');
     expect(migrations[1]?.name).toBe('002_catalog');
+    expect(migrations[2]?.name).toBe('003_content_identity');
     const db = openMemory();
-    expect(migrate(db)).toEqual(['001_init', '002_catalog']);
+    expect(migrate(db)).toEqual(['001_init', '002_catalog', '003_content_identity']);
     expect(migrate(db)).toEqual([]);
   });
 });

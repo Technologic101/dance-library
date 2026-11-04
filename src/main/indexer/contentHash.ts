@@ -2,7 +2,13 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 
 export const CONTENT_HASH_KIND = 'sha256-head-tail-v1';
+export const FULL_HASH_KIND = 'sha256-full-v1';
 export const DEFAULT_HASH_CHUNK = 1024 * 1024;
+
+/** Files this size or smaller are fully covered by the partial hash. */
+export function partialHashCoversFile(size: number, chunkBytes = DEFAULT_HASH_CHUNK): boolean {
+  return size >= 0 && size <= chunkBytes * 2;
+}
 
 export type ContentHash = {
   hash: string;
@@ -39,6 +45,25 @@ export async function partialContentHash(
       hash.update(tail);
     }
     return { hash: hash.digest('hex'), kind: CONTENT_HASH_KIND, size };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** SHA-256 of every byte. The file is opened read-only. */
+export async function fullContentHash(filePath: string): Promise<string> {
+  const hash = createHash('sha256');
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(DEFAULT_HASH_CHUNK);
+    let position = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead <= 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    return hash.digest('hex');
   } finally {
     await handle.close();
   }

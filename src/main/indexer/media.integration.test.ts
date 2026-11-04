@@ -104,7 +104,9 @@ describe('real sample videos', () => {
     expect(added.scan).toMatchObject({ discovered: 3, added: 3, errors: 0 });
 
     const videos = service.listVideos();
-    const byName = new Map(videos.map((video) => [video.filename, video]));
+    const byName = new Map(
+      videos.flatMap((video) => video.locations.map((location) => [location.filename, video])),
+    );
     expect(byName.get('lesson-basic.mp4')).toMatchObject({
       videoCodec: 'h264',
       width: 160,
@@ -142,13 +144,14 @@ describe('real sample videos', () => {
     expect(rescanned.missing).toBe(1);
     const afterVideos = service.listVideos();
     const warmup = afterVideos.find((video) => video.id === lesson.id);
-    const missing = afterVideos.find((video) => video.filename === 'demo-hevc.mp4');
-    expect(warmup).toMatchObject({
-      path: renamed,
-      filename: 'warmup.mp4',
-      displayTitle: 'Basic step',
-      presence: 'present',
-    });
+    const missing = afterVideos.find((video) =>
+      video.locations.some((location) => location.filename === 'demo-hevc.mp4'),
+    );
+    expect(warmup?.displayTitle).toBe('Basic step');
+    expect(warmup?.presence).toBe('present');
+    expect(warmup?.locations).toEqual([
+      expect.objectContaining({ path: renamed, filename: 'warmup.mp4', presence: 'present' }),
+    ]);
     expect(missing?.presence).toBe('missing');
     const kept = db
       .prepare(`SELECT notes, favorite, title FROM videos WHERE id = ?`)

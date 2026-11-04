@@ -7,6 +7,8 @@ import type {
   LibrarySummary,
   ScanProgress,
   ScanSummary,
+  VideoChangeResult,
+  VideoCounts,
   VideoListItem,
 } from '../shared/api';
 import { createScanDeps } from './indexer/fsDeps';
@@ -42,8 +44,20 @@ export function createLibraryService(
       return repo.listLibrarySummaries();
     },
 
-    listVideos(): VideoListItem[] {
-      return repo.listVideoSummaries();
+    listVideos(options?: { excluded?: boolean }): VideoListItem[] {
+      return repo.listVideoSummaries(options?.excluded ?? false);
+    },
+
+    countVideos(): VideoCounts {
+      return repo.countVideos();
+    },
+
+    excludeVideos(ids: readonly string[]): Promise<VideoChangeResult> {
+      return enqueue(async () => ({ changed: repo.excludeVideos(ids, new Date().toISOString()) }));
+    },
+
+    restoreVideos(ids: readonly string[]): Promise<VideoChangeResult> {
+      return enqueue(async () => ({ changed: repo.restoreVideos(ids, new Date().toISOString()) }));
     },
 
     addPaths(
@@ -84,7 +98,7 @@ export function createLibraryService(
     },
 
     removeLibrary(id: string): Promise<boolean> {
-      return enqueue(async () => repo.removeLibrary(id, thumbsDir));
+      return enqueue(async () => repo.removeLibrary(id));
     },
 
     scanLibrary(id: string, onProgress?: ScanListener): Promise<ScanSummary> {

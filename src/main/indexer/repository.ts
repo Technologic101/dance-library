@@ -1,11 +1,10 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import type Database from 'better-sqlite3';
 import {
   thumbnailUrl,
   type CaptureDateSource,
   type LibrarySummary,
   type VideoListItem,
+  type VideoLocationItem,
 } from '../../shared/api';
 
 export type LibraryRecord = {
@@ -20,37 +19,26 @@ export type LibraryRecord = {
   lastError: string | null;
 };
 
-export type VideoIdentity = {
+export type LocationRecord = {
   id: string;
+  videoId: string;
   libraryId: string;
   path: string;
   filename: string;
   volumeId: string | null;
   fileId: string | null;
-  contentHash: string | null;
   sizeBytes: number | null;
   mtimeNs: string | null;
-  durationMs: number | null;
-  width: number | null;
-  videoCodec: string | null;
-  capturedAt: string | null;
-  capturedAtSource: CaptureDateSource | null;
   presence: 'present' | 'missing';
-  metadataError: string | null;
-  thumbnailFile: string | null;
+  createdAt: string;
 };
 
-export type TechnicalVideo = {
+export type VideoRecord = {
   id: string;
-  libraryId: string;
-  path: string;
-  filename: string;
-  volumeId: string | null;
-  fileId: string | null;
   contentHash: string | null;
   contentHashKind: string | null;
+  fullHash: string | null;
   sizeBytes: number | null;
-  mtimeNs: string | null;
   durationMs: number | null;
   width: number | null;
   height: number | null;
@@ -59,48 +47,72 @@ export type TechnicalVideo = {
   capturedAt: string | null;
   capturedAtSource: CaptureDateSource | null;
   metadataCreatedAt: string | null;
-  fileCreatedAt: string | null;
-  fileModifiedAt: string | null;
   metadataError: string | null;
   thumbnailFile: string | null;
+  excluded: number;
+  createdAt: string;
+};
+
+export type VideoWrite = {
+  id: string;
+  contentHash: string | null;
+  contentHashKind: string | null;
+  fullHash: string | null;
+  fullHashKind: string | null;
+  sizeBytes: number | null;
+  durationMs: number | null;
+  width: number | null;
+  height: number | null;
+  videoCodec: string | null;
+  container: string | null;
+  capturedAt: string | null;
+  capturedAtSource: CaptureDateSource | null;
+  metadataCreatedAt: string | null;
+  metadataError: string | null;
+  thumbnailFile: string | null;
+  now: string;
+};
+
+export type LocationWrite = {
+  id: string;
+  videoId: string;
+  libraryId: string;
+  path: string;
+  filename: string;
+  volumeId: string | null;
+  fileId: string | null;
+  sizeBytes: number | null;
+  mtimeNs: string | null;
+  fileCreatedAt: string | null;
+  fileModifiedAt: string | null;
   generation: number;
   now: string;
 };
 
-const VIDEO_SELECT = `
-  SELECT
-    id,
-    library_id AS libraryId,
-    path,
-    filename,
-    volume_id AS volumeId,
-    file_id AS fileId,
-    content_hash AS contentHash,
-    size_bytes AS sizeBytes,
-    mtime_ns AS mtimeNs,
-    duration_ms AS durationMs,
-    width,
-    video_codec AS videoCodec,
-    captured_at AS capturedAt,
-    captured_at_source AS capturedAtSource,
-    presence,
-    metadata_error AS metadataError,
-    thumbnail_file AS thumbnailFile
-  FROM videos
-`;
-
 const LIBRARY_SELECT = `
   SELECT
-    id,
-    path,
-    volume_id AS volumeId,
-    volume_rel_path AS volumeRelPath,
-    label,
-    availability,
-    scan_generation AS scanGeneration,
-    last_scanned_at AS lastScannedAt,
-    last_error AS lastError
+    id, path, volume_id AS volumeId, volume_rel_path AS volumeRelPath, label, availability,
+    scan_generation AS scanGeneration, last_scanned_at AS lastScannedAt, last_error AS lastError
   FROM libraries
+`;
+
+const LOCATION_SELECT = `
+  SELECT
+    id, video_id AS videoId, library_id AS libraryId, path, filename,
+    volume_id AS volumeId, file_id AS fileId, size_bytes AS sizeBytes, mtime_ns AS mtimeNs,
+    presence, created_at AS createdAt
+  FROM video_locations
+`;
+
+const VIDEO_SELECT = `
+  SELECT
+    id, content_hash AS contentHash, content_hash_kind AS contentHashKind, full_hash AS fullHash,
+    size_bytes AS sizeBytes, duration_ms AS durationMs, width, height,
+    video_codec AS videoCodec, container, captured_at AS capturedAt,
+    captured_at_source AS capturedAtSource, metadata_created_at AS metadataCreatedAt,
+    metadata_error AS metadataError, thumbnail_file AS thumbnailFile, excluded,
+    created_at AS createdAt
+  FROM videos
 `;
 
 export function createRepository(db: Database.Database) {
@@ -110,14 +122,76 @@ export function createRepository(db: Database.Database) {
     INSERT INTO libraries (id, path, label, availability, created_at, updated_at)
     VALUES (@id, @path, @label, 'online', @now, @now)
   `);
-  const videosByIdentity = db.prepare(
-    `${VIDEO_SELECT} WHERE volume_id = ? AND file_id = ? ORDER BY created_at, id`,
+  const locationsByIdentity = db.prepare(
+    `${LOCATION_SELECT} WHERE volume_id = ? AND file_id = ? ORDER BY created_at, id`,
   );
-  const videoByPath = db.prepare(`${VIDEO_SELECT} WHERE path = ?`);
-  const videoByPathNoCase = db.prepare(`${VIDEO_SELECT} WHERE path = ? COLLATE NOCASE`);
+  const locationByPath = db.prepare(`${LOCATION_SELECT} WHERE path = ?`);
+  const locationByPathNoCase = db.prepare(`${LOCATION_SELECT} WHERE path = ? COLLATE NOCASE`);
+  const videoById = db.prepare(`${VIDEO_SELECT} WHERE id = ?`);
   const videosByHash = db.prepare(
     `${VIDEO_SELECT} WHERE content_hash = ? AND size_bytes = ? ORDER BY created_at, id`,
   );
+  const locationsForVideoStmt = db.prepare(
+    `${LOCATION_SELECT} WHERE video_id = ? ORDER BY created_at, id`,
+  );
+
+  const insertVideoStmt = db.prepare(`
+    INSERT INTO videos (
+      id, content_hash, content_hash_kind, full_hash, full_hash_kind, size_bytes,
+      duration_ms, width, height, video_codec, container, captured_at, captured_at_source,
+      metadata_created_at, metadata_error, thumbnail_file, created_at, updated_at
+    ) VALUES (
+      @id, @contentHash, @contentHashKind, @fullHash, @fullHashKind, @sizeBytes,
+      @durationMs, @width, @height, @videoCodec, @container, @capturedAt, @capturedAtSource,
+      @metadataCreatedAt, @metadataError, @thumbnailFile, @now, @now
+    )
+  `);
+  const updateVideoStmt = db.prepare(`
+    UPDATE videos SET
+      content_hash = @contentHash,
+      content_hash_kind = @contentHashKind,
+      full_hash = COALESCE(@fullHash, full_hash),
+      full_hash_kind = COALESCE(@fullHashKind, full_hash_kind),
+      size_bytes = @sizeBytes,
+      duration_ms = @durationMs,
+      width = @width,
+      height = @height,
+      video_codec = @videoCodec,
+      container = @container,
+      captured_at = @capturedAt,
+      captured_at_source = @capturedAtSource,
+      metadata_created_at = @metadataCreatedAt,
+      metadata_error = @metadataError,
+      thumbnail_file = COALESCE(@thumbnailFile, thumbnail_file),
+      updated_at = @now
+    WHERE id = @id
+  `);
+  const insertLocationStmt = db.prepare(`
+    INSERT INTO video_locations (
+      id, video_id, library_id, path, filename, volume_id, file_id, size_bytes, mtime_ns,
+      file_created_at, file_modified_at, presence, last_scan_generation, created_at, updated_at
+    ) VALUES (
+      @id, @videoId, @libraryId, @path, @filename, @volumeId, @fileId, @sizeBytes, @mtimeNs,
+      @fileCreatedAt, @fileModifiedAt, 'present', @generation, @now, @now
+    )
+  `);
+  const updateLocationStmt = db.prepare(`
+    UPDATE video_locations SET
+      video_id = @videoId,
+      library_id = @libraryId,
+      path = @path,
+      filename = @filename,
+      volume_id = @volumeId,
+      file_id = @fileId,
+      size_bytes = @sizeBytes,
+      mtime_ns = @mtimeNs,
+      file_created_at = @fileCreatedAt,
+      file_modified_at = @fileModifiedAt,
+      presence = 'present',
+      last_scan_generation = @generation,
+      updated_at = @now
+    WHERE id = @id
+  `);
 
   return {
     getLibrary(id: string): LibraryRecord | null {
@@ -175,110 +249,62 @@ export function createRepository(db: Database.Database) {
       ).run(now, now, id);
     },
 
-    findByIdentity(volumeId: string, fileId: string): VideoIdentity[] {
-      return videosByIdentity.all(volumeId, fileId) as VideoIdentity[];
+    findLocationsByIdentity(volumeId: string, fileId: string): LocationRecord[] {
+      return locationsByIdentity.all(volumeId, fileId) as LocationRecord[];
     },
 
-    findByPath(filePath: string): VideoIdentity | null {
-      const stmt = process.platform === 'win32' ? videoByPathNoCase : videoByPath;
-      return (stmt.get(filePath) as VideoIdentity | undefined) ?? null;
+    findLocationByPath(filePath: string): LocationRecord | null {
+      const stmt = process.platform === 'win32' ? locationByPathNoCase : locationByPath;
+      return (stmt.get(filePath) as LocationRecord | undefined) ?? null;
     },
 
-    findByHash(hash: string, size: number): VideoIdentity[] {
-      return videosByHash.all(hash, size) as VideoIdentity[];
+    getVideo(id: string): VideoRecord | null {
+      return (videoById.get(id) as VideoRecord | undefined) ?? null;
     },
 
-    insertVideo(video: TechnicalVideo): void {
+    findVideosByPartialHash(hash: string, size: number): VideoRecord[] {
+      return videosByHash.all(hash, size) as VideoRecord[];
+    },
+
+    locationsForVideo(videoId: string): LocationRecord[] {
+      return locationsForVideoStmt.all(videoId) as LocationRecord[];
+    },
+
+    insertVideo(video: VideoWrite): void {
+      insertVideoStmt.run(video);
+    },
+
+    /** Technical columns only. Title, notes, exclusion, and other user fields stay put. */
+    updateVideoTechnical(video: VideoWrite): void {
+      updateVideoStmt.run(video);
+    },
+
+    setFullHash(id: string, hash: string, kind: string, now: string): void {
       db.prepare(
-        `INSERT INTO videos (
-           id, library_id, path, filename, volume_id, file_id, content_hash, content_hash_kind,
-           size_bytes, mtime_ns, duration_ms, width, height, video_codec, container,
-           captured_at, captured_at_source, metadata_created_at, file_created_at, file_modified_at,
-           presence, last_scan_generation, metadata_error, thumbnail_file, created_at, updated_at
-         ) VALUES (
-           @id, @libraryId, @path, @filename, @volumeId, @fileId, @contentHash, @contentHashKind,
-           @sizeBytes, @mtimeNs, @durationMs, @width, @height, @videoCodec, @container,
-           @capturedAt, @capturedAtSource, @metadataCreatedAt, @fileCreatedAt, @fileModifiedAt,
-           'present', @generation, @metadataError, @thumbnailFile, @now, @now
-         )`,
-      ).run(video);
+        `UPDATE videos SET full_hash = ?, full_hash_kind = ?, updated_at = ? WHERE id = ?`,
+      ).run(hash, kind, now, id);
     },
 
-    /** Updates technical columns only. User catalog fields are left alone. */
-    updateTechnical(video: TechnicalVideo): void {
-      db.prepare(
-        `UPDATE videos SET
-           library_id = @libraryId,
-           path = @path,
-           filename = @filename,
-           volume_id = @volumeId,
-           file_id = @fileId,
-           content_hash = @contentHash,
-           content_hash_kind = @contentHashKind,
-           size_bytes = @sizeBytes,
-           mtime_ns = @mtimeNs,
-           duration_ms = @durationMs,
-           width = @width,
-           height = @height,
-           video_codec = @videoCodec,
-           container = @container,
-           captured_at = @capturedAt,
-           captured_at_source = @capturedAtSource,
-           metadata_created_at = @metadataCreatedAt,
-           file_created_at = @fileCreatedAt,
-           file_modified_at = @fileModifiedAt,
-           presence = 'present',
-           last_scan_generation = @generation,
-           metadata_error = @metadataError,
-           thumbnail_file = @thumbnailFile,
-           updated_at = @now
-         WHERE id = @id`,
-      ).run(video);
+    insertLocation(location: LocationWrite): void {
+      insertLocationStmt.run(location);
     },
 
-    touchVideo(input: {
-      id: string;
-      libraryId: string;
-      path: string;
-      filename: string;
-      volumeId: string | null;
-      fileId: string | null;
-      capturedAt: string | null;
-      capturedAtSource: CaptureDateSource | null;
-      generation: number;
-      now: string;
-    }): void {
-      db.prepare(
-        `UPDATE videos SET
-           library_id = @libraryId,
-           path = @path,
-           filename = @filename,
-           volume_id = @volumeId,
-           file_id = @fileId,
-           captured_at = @capturedAt,
-           captured_at_source = @capturedAtSource,
-           presence = 'present',
-           last_scan_generation = @generation,
-           updated_at = @now
-         WHERE id = @id`,
-      ).run(input);
+    updateLocation(location: LocationWrite): void {
+      updateLocationStmt.run(location);
     },
 
-    noteError(id: string, message: string, generation: number, now: string): void {
-      db.prepare(
-        `UPDATE videos SET
-           metadata_error = ?,
-           presence = 'present',
-           last_scan_generation = ?,
-           updated_at = ?
-         WHERE id = ?`,
-      ).run(message, generation, now, id);
+    noteError(videoId: string, message: string, now: string): void {
+      db.prepare(`UPDATE videos SET metadata_error = ?, updated_at = ? WHERE id = ?`).run(
+        message,
+        now,
+        videoId,
+      );
     },
 
     markMissing(libraryId: string, generation: number, now: string): number {
       const result = db
         .prepare(
-          `UPDATE videos
+          `UPDATE video_locations
            SET presence = 'missing', updated_at = ?
            WHERE library_id = ? AND last_scan_generation < ? AND presence = 'present'`,
         )
@@ -286,87 +312,224 @@ export function createRepository(db: Database.Database) {
       return result.changes;
     },
 
+    /**
+     * Keep one content row. Locations and any filled-in user fields move with it.
+     * Exclusion wins: a removed video stays removed after a duplicate is merged in.
+     */
+    mergeVideos(keepId: string, dropIds: readonly string[], now: string): void {
+      const apply = db.transaction(() => {
+        for (const dropId of dropIds) {
+          if (dropId === keepId) continue;
+          const dropHash = db
+            .prepare(
+              `SELECT full_hash AS fullHash, full_hash_kind AS fullHashKind FROM videos WHERE id = ?`,
+            )
+            .get(dropId) as { fullHash: string | null; fullHashKind: string | null } | undefined;
+          db.prepare(`UPDATE videos SET full_hash = NULL, full_hash_kind = NULL WHERE id = ?`).run(
+            dropId,
+          );
+          db.prepare(
+            `UPDATE videos SET
+               full_hash = COALESCE(full_hash, ?),
+               full_hash_kind = COALESCE(full_hash_kind, ?)
+             WHERE id = ?`,
+          ).run(dropHash?.fullHash ?? null, dropHash?.fullHashKind ?? null, keepId);
+          db.prepare(
+            `UPDATE videos SET
+               title = COALESCE(title, (SELECT title FROM videos WHERE id = ?)),
+               video_type = COALESCE(video_type, (SELECT video_type FROM videos WHERE id = ?)),
+               style_id = COALESCE(style_id, (SELECT style_id FROM videos WHERE id = ?)),
+               level = COALESCE(level, (SELECT level FROM videos WHERE id = ?)),
+               event_name = COALESCE(event_name, (SELECT event_name FROM videos WHERE id = ?)),
+               event_date = COALESCE(event_date, (SELECT event_date FROM videos WHERE id = ?)),
+               rating = COALESCE(rating, (SELECT rating FROM videos WHERE id = ?)),
+               notes = COALESCE(notes, (SELECT notes FROM videos WHERE id = ?)),
+               favorite = MAX(favorite, (SELECT favorite FROM videos WHERE id = ?)),
+               excluded = MAX(excluded, (SELECT excluded FROM videos WHERE id = ?)),
+               thumbnail_file = COALESCE(thumbnail_file, (SELECT thumbnail_file FROM videos WHERE id = ?)),
+               content_hash = COALESCE(content_hash, (SELECT content_hash FROM videos WHERE id = ?)),
+               content_hash_kind = COALESCE(content_hash_kind, (SELECT content_hash_kind FROM videos WHERE id = ?)),
+               updated_at = ?
+             WHERE id = ?`,
+          ).run(
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            dropId,
+            now,
+            keepId,
+          );
+          db.prepare(`UPDATE video_locations SET video_id = ? WHERE video_id = ?`).run(
+            keepId,
+            dropId,
+          );
+          db.prepare(
+            `INSERT OR IGNORE INTO video_instructors (video_id, instructor_id)
+             SELECT ?, instructor_id FROM video_instructors WHERE video_id = ?`,
+          ).run(keepId, dropId);
+          db.prepare(
+            `INSERT OR IGNORE INTO video_tags (video_id, tag_id)
+             SELECT ?, tag_id FROM video_tags WHERE video_id = ?`,
+          ).run(keepId, dropId);
+          db.prepare(`DELETE FROM videos WHERE id = ?`).run(dropId);
+        }
+      });
+      apply();
+    },
+
     listLibrarySummaries(): LibrarySummary[] {
-      const rows = db
+      return db
         .prepare(
           `SELECT
-             l.id,
-             l.path,
-             l.label,
-             l.availability,
-             l.last_scanned_at AS lastScannedAt,
-             l.last_error AS lastError,
-             (SELECT COUNT(*) FROM videos v WHERE v.library_id = l.id) AS videoCount,
-             (SELECT COUNT(*) FROM videos v WHERE v.library_id = l.id AND v.presence = 'missing') AS missingCount
+             l.id, l.path, l.label, l.availability,
+             l.last_scanned_at AS lastScannedAt, l.last_error AS lastError,
+             (
+               SELECT COUNT(DISTINCT loc.video_id)
+               FROM video_locations loc
+               JOIN videos v ON v.id = loc.video_id
+               WHERE loc.library_id = l.id AND v.excluded = 0
+             ) AS videoCount,
+             (
+               SELECT COUNT(DISTINCT loc.video_id)
+               FROM video_locations loc
+               JOIN videos v ON v.id = loc.video_id
+               WHERE loc.library_id = l.id AND v.excluded = 0 AND loc.presence = 'missing'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM video_locations other
+                   WHERE other.video_id = loc.video_id
+                     AND other.library_id = l.id
+                     AND other.presence = 'present'
+                 )
+             ) AS missingCount
            FROM libraries l
            ORDER BY l.label COLLATE NOCASE, l.path`,
         )
         .all() as LibrarySummary[];
-      return rows;
     },
 
-    listVideoSummaries(): VideoListItem[] {
+    countVideos(): { visible: number; excluded: number } {
+      const row = db
+        .prepare(
+          `SELECT
+             SUM(CASE WHEN excluded = 0 THEN 1 ELSE 0 END) AS visible,
+             SUM(CASE WHEN excluded = 1 THEN 1 ELSE 0 END) AS excluded
+           FROM videos`,
+        )
+        .get() as { visible: number | null; excluded: number | null };
+      return { visible: row.visible ?? 0, excluded: row.excluded ?? 0 };
+    },
+
+    listVideoSummaries(excluded: boolean): VideoListItem[] {
       const rows = db
         .prepare(
           `SELECT
-             v.id,
-             v.library_id AS libraryId,
-             l.label AS libraryLabel,
-             v.path,
-             v.filename,
-             v.title,
-             v.size_bytes AS sizeBytes,
-             v.duration_ms AS durationMs,
-             v.width,
-             v.height,
-             v.video_codec AS videoCodec,
-             v.captured_at AS capturedAt,
-             v.captured_at_source AS capturedAtSource,
-             v.presence,
-             v.metadata_error AS metadataError,
-             v.thumbnail_file AS thumbnailFile
+             v.id, v.title, v.size_bytes AS sizeBytes, v.duration_ms AS durationMs,
+             v.width, v.height, v.video_codec AS videoCodec, v.captured_at AS capturedAt,
+             v.captured_at_source AS capturedAtSource, v.metadata_error AS metadataError,
+             v.thumbnail_file AS thumbnailFile, v.excluded,
+             json_group_array(
+               CASE WHEN loc.id IS NULL THEN NULL ELSE json_object(
+                 'id', loc.id,
+                 'libraryId', loc.library_id,
+                 'libraryLabel', lib.label,
+                 'path', loc.path,
+                 'filename', loc.filename,
+                 'presence', loc.presence
+               ) END
+             ) AS locationsJson
            FROM videos v
-           JOIN libraries l ON l.id = v.library_id
-           ORDER BY v.filename COLLATE NOCASE, v.path`,
+           LEFT JOIN video_locations loc ON loc.video_id = v.id
+           LEFT JOIN libraries lib ON lib.id = loc.library_id
+           WHERE v.excluded = ?
+           GROUP BY v.id
+           ORDER BY COALESCE(NULLIF(TRIM(v.title), ''), v.created_at)`,
         )
-        .all() as (Omit<VideoListItem, 'displayTitle' | 'thumbnailUrl'> & {
-        thumbnailFile: string | null;
-      })[];
-      return rows.map((row) => ({
-        id: row.id,
-        libraryId: row.libraryId,
-        libraryLabel: row.libraryLabel,
-        path: row.path,
-        filename: row.filename,
-        title: row.title,
-        displayTitle: row.title?.trim() ? row.title.trim() : row.filename,
-        sizeBytes: row.sizeBytes,
-        durationMs: row.durationMs,
-        width: row.width,
-        height: row.height,
-        videoCodec: row.videoCodec,
-        capturedAt: row.capturedAt,
-        capturedAtSource: row.capturedAtSource,
-        presence: row.presence,
-        metadataError: row.metadataError,
-        thumbnailUrl: thumbnailUrl(row.thumbnailFile),
-      }));
+        .all(excluded ? 1 : 0) as RawVideoRow[];
+      return rows.map(toListItem);
     },
 
-    removeLibrary(id: string, thumbsDir: string): boolean {
-      const thumbs = db
-        .prepare(`SELECT thumbnail_file AS thumbnailFile FROM videos WHERE library_id = ?`)
-        .all(id) as { thumbnailFile: string | null }[];
+    excludeVideos(ids: readonly string[], now: string): number {
+      const stmt = db.prepare(
+        `UPDATE videos SET excluded = 1, excluded_at = ?, updated_at = ? WHERE id = ? AND excluded = 0`,
+      );
+      const apply = db.transaction(() => {
+        let changed = 0;
+        for (const id of ids) changed += stmt.run(now, now, id).changes;
+        return changed;
+      });
+      return apply();
+    },
+
+    restoreVideos(ids: readonly string[], now: string): number {
+      const stmt = db.prepare(
+        `UPDATE videos SET excluded = 0, excluded_at = NULL, updated_at = ? WHERE id = ? AND excluded = 1`,
+      );
+      const apply = db.transaction(() => {
+        let changed = 0;
+        for (const id of ids) changed += stmt.run(now, id).changes;
+        return changed;
+      });
+      return apply();
+    },
+
+    removeLibrary(id: string): boolean {
       const result = db.prepare(`DELETE FROM libraries WHERE id = ?`).run(id);
-      if (result.changes === 0) return false;
-      for (const thumb of thumbs) {
-        if (!thumb.thumbnailFile || path.basename(thumb.thumbnailFile) !== thumb.thumbnailFile)
-          continue;
-        fs.rmSync(path.join(thumbsDir, thumb.thumbnailFile), { force: true });
-      }
-      return true;
+      return result.changes > 0;
     },
   };
 }
 
 export type CatalogRepository = ReturnType<typeof createRepository>;
+
+type RawVideoRow = {
+  id: string;
+  title: string | null;
+  sizeBytes: number | null;
+  durationMs: number | null;
+  width: number | null;
+  height: number | null;
+  videoCodec: string | null;
+  capturedAt: string | null;
+  capturedAtSource: CaptureDateSource | null;
+  metadataError: string | null;
+  thumbnailFile: string | null;
+  excluded: number;
+  locationsJson: string;
+};
+
+function toListItem(row: RawVideoRow): VideoListItem {
+  const parsed = JSON.parse(row.locationsJson) as (VideoLocationItem | null)[];
+  const locations = parsed.filter((location): location is VideoLocationItem => location !== null);
+  locations.sort((left, right) => {
+    if (left.presence !== right.presence) return left.presence === 'present' ? -1 : 1;
+    return left.filename.localeCompare(right.filename);
+  });
+  const primary = locations[0];
+  const title = row.title?.trim() ? row.title.trim() : null;
+  return {
+    id: row.id,
+    title,
+    displayTitle: title ?? primary?.filename ?? 'Untitled',
+    sizeBytes: row.sizeBytes,
+    durationMs: row.durationMs,
+    width: row.width,
+    height: row.height,
+    videoCodec: row.videoCodec,
+    capturedAt: row.capturedAt,
+    capturedAtSource: row.capturedAtSource,
+    presence: locations.some((location) => location.presence === 'present') ? 'present' : 'missing',
+    metadataError: row.metadataError,
+    thumbnailUrl: thumbnailUrl(row.thumbnailFile),
+    excluded: row.excluded === 1,
+    locations,
+  };
+}
