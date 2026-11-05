@@ -104,7 +104,16 @@ export function createLibraryService(
     },
 
     removeLibrary(id: string): Promise<boolean> {
-      return enqueue(async () => repo.removeLibrary(id));
+      return enqueue(async () => {
+        const removed = repo.removeLibrary(id);
+        if (!removed) return false;
+        for (const name of repo.deleteEmptyOrphans()) {
+          const base = path.basename(name);
+          if (base !== name) continue;
+          fs.rmSync(path.join(thumbsDir, base), { force: true });
+        }
+        return true;
+      });
     },
 
     scanLibrary(id: string, onProgress?: ScanListener): Promise<ScanSummary> {

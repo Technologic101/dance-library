@@ -277,9 +277,10 @@ export function createRepository(db: Database.Database) {
     resolveVideoId(id: string): string {
       let current = id;
       const lookup = db.prepare(`SELECT to_id AS toId FROM video_redirects WHERE from_id = ?`);
+      const videoExists = db.prepare(`SELECT 1 AS ok FROM videos WHERE id = ?`);
       for (let hop = 0; hop < 8; hop += 1) {
         const next = lookup.get(current) as { toId: string } | undefined;
-        if (!next) return current;
+        if (!next || !videoExists.get(next.toId)) return current;
         current = next.toId;
       }
       return current;
@@ -367,8 +368,12 @@ export function createRepository(db: Database.Database) {
         )
         .all() as { id: string; thumbnailFile: string | null }[];
       const remove = db.prepare(`DELETE FROM videos WHERE id = ?`);
+      const prune = db.prepare(
+        `DELETE FROM video_redirects WHERE to_id NOT IN (SELECT id FROM videos)`,
+      );
       const apply = db.transaction(() => {
         for (const row of rows) remove.run(row.id);
+        prune.run();
       });
       apply();
       return rows
@@ -382,7 +387,7 @@ export function createRepository(db: Database.Database) {
      */
     mergeVideos(keepId: string, dropIds: readonly string[], now: string): void {
       const apply = db.transaction(() => {
-        for (const dropId of dropIds) {
+        for (const dropId of [...new Set(dropIds)]) {
           if (dropId === keepId) continue;
           const dropHash = db
             .prepare(

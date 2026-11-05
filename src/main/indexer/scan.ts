@@ -223,7 +223,10 @@ export async function scanLibrary(
       summary.errors += 1;
       const message = clipError(error instanceof Error ? error.message : String(error));
       const existing = repo.findLocationByPath(file);
-      if (existing) repo.noteError(existing.videoId, message, deps.now());
+      if (existing) {
+        repo.noteError(existing.videoId, message, deps.now());
+        seen.add(existing.id);
+      }
     }
     await yieldNow();
   }
@@ -271,7 +274,7 @@ async function indexFile(
   let location = repo.findLocationByPath(input.filePath);
   if (location && input.seen.has(location.id)) location = null;
   if (!location && stat.fileId && stat.volumeId && stat.fileIdStable !== false) {
-    location = identityLocation(repo, deps, stat, input.filePath, input.seen, null);
+    location = await identityLocation(repo, deps, stat, input.filePath, input.seen, null);
   }
 
   if (stat.size === 0) {
@@ -303,7 +306,7 @@ async function indexFile(
   }
 
   if (!location && contentHash && stat.fileId && stat.volumeId && stat.fileIdStable !== false) {
-    location = identityLocation(repo, deps, stat, input.filePath, input.seen, contentHash);
+    location = await identityLocation(repo, deps, stat, input.filePath, input.seen, contentHash);
   }
 
   const boundVideo = location ? repo.getVideo(location.videoId) : currentVideo;
@@ -311,18 +314,26 @@ async function indexFile(
     contentHash && boundVideo?.contentHash && boundVideo.contentHash !== contentHash,
   );
   const hashMissing = Boolean(contentHash && boundVideo && !boundVideo.contentHash);
+  const fullHashMissing = Boolean(
+    contentHash && !deps.hashCoversFile(stat.size) && !boundVideo?.fullHash,
+  );
   const plan =
-    contentHash && (!boundVideo?.contentHash || hashChanged)
+    contentHash && (!boundVideo?.contentHash || hashChanged || fullHashMissing)
       ? await planContentMatch(repo, deps, {
           filePath: input.filePath,
           hash: contentHash,
           size: stat.size,
           exceptVideoId: hashChanged ? boundVideo?.id : undefined,
         })
-      : { keepId: null, mergeIds: [] as string[], fullHash: null as string | null };
+      : {
+          keepId: null,
+          mergeIds: [] as string[],
+          fullHash: null as string | null,
+          fullHashError: null as string | null,
+        };
 
   let target = hashChanged ? null : boundVideo;
-  const mergeIds = [...plan.mergeIds];
+  const mergeIds = [...new Set(plan.mergeIds)];
   if (plan.keepId && (!target || target.id !== plan.keepId)) {
     if (target && target.id !== plan.keepId) mergeIds.push(target.id);
     target = repo.getVideo(plan.keepId);
@@ -381,7 +392,7 @@ async function indexFile(
       capturedAt: captured.capturedAt,
       capturedAtSource: captured.source,
       metadataCreatedAt: probed.metadataCreatedAt,
-      metadataError: hashError ?? probed.error,
+      metadataError: hashError ?? plan.fullHashError ?? probed.error,
       thumbnailFile,
       now,
     };
@@ -417,6 +428,7 @@ type MatchPlan = {
   keepId: string | null;
   mergeIds: string[];
   fullHash: string | null;
+  fullHashError: string | null;
 };
 
 async function planContentMatch(
@@ -426,11 +438,13 @@ async function planContentMatch(
 ): Promise<MatchPlan> {
   const covers = deps.hashCoversFile(input.size);
   let fullHash: string | null = null;
+  let fullHashError: string | null = null;
   if (!covers) {
     try {
       fullHash = await deps.fullHash(input.filePath);
-    } catch {
+    } catch (error) {
       fullHash = null;
+      fullHashError = clipError(error instanceof Error ? error.message : String(error));
     }
   }
   const candidates = repo
@@ -456,14 +470,15 @@ async function planContentMatch(
   }
   const key = covers ? input.hash : fullHash;
   const matched = key ? (groups.get(key) ?? []) : [];
-  if (matched.length === 0) return { keepId: null, mergeIds: [], fullHash };
+  if (matched.length === 0) return { keepId: null, mergeIds: [], fullHash, fullHashError };
   const ordered = [...matched].sort((left, right) => (left.createdAt < right.createdAt ? -1 : 1));
   const keep = ordered[0];
-  if (!keep) return { keepId: null, mergeIds: [], fullHash };
+  if (!keep) return { keepId: null, mergeIds: [], fullHash, fullHashError };
   return {
     keepId: keep.id,
     mergeIds: ordered.slice(1).map((video) => video.id),
     fullHash,
+    fullHashError,
   };
 }
 
@@ -501,26 +516,37 @@ async function readCandidateFullHash(
   return null;
 }
 
-function identityLocation(
+async function identityLocation(
   repo: CatalogRepository,
   deps: ScanDeps,
   stat: IndexedStat,
   filePath: string,
   seen: ReadonlySet<string>,
   contentHash: string | null,
-): LocationRecord | null {
+): Promise<LocationRecord | null> {
   if (!stat.volumeId || !stat.fileId) return null;
-  const candidate = pickIdentityMatch(
-    repo.findLocationsByIdentity(stat.volumeId, stat.fileId),
-    filePath,
-    (candidatePath) => deps.exists(candidatePath),
+  const rows = repo.findLocationsByIdentity(stat.volumeId, stat.fileId);
+  const candidate = pickIdentityMatch(rows, filePath, (candidatePath) =>
+    deps.exists(candidatePath),
   );
-  if (!candidate || seen.has(candidate.id)) return null;
-  const video = repo.getVideo(candidate.videoId);
-  const sameTime = candidate.sizeBytes === stat.size && candidate.mtimeNs === stat.mtimeNs;
-  const sameHash = Boolean(contentHash && video?.contentHash === contentHash);
-  if (!sameTime && !sameHash) return null;
-  return candidate;
+  if (candidate && !seen.has(candidate.id)) {
+    const video = repo.getVideo(candidate.videoId);
+    const sameTime = candidate.sizeBytes === stat.size && candidate.mtimeNs === stat.mtimeNs;
+    const sameHash = Boolean(contentHash && video?.contentHash === contentHash);
+    if (sameTime || sameHash) return candidate;
+  }
+  // A case-only rename on a case-insensitive volume still "exists" at the old
+  // spelling. The inode matches, so rewrite that row instead of adding one.
+  for (const row of rows) {
+    if (seen.has(row.id) || pathsEqual(row.path, filePath)) continue;
+    try {
+      const alias = await deps.stat(row.path);
+      if (alias.fileId && alias.fileId === stat.fileId) return row;
+    } catch {
+      // The stored path is not a readable alias of this file.
+    }
+  }
+  return null;
 }
 
 function claimGoneLocation(
@@ -604,6 +630,7 @@ function canSkipProbe(
 ): boolean {
   if (location.sizeBytes !== stat.size || location.mtimeNs !== stat.mtimeNs) return false;
   if (!video.contentHash || video.metadataError) return false;
+  if (!video.fullHash && !deps.hashCoversFile(location.sizeBytes ?? stat.size)) return false;
   if (video.durationMs == null && video.videoCodec == null) return false;
   if (!video.thumbnailFile || !deps.thumbnailExists(video.thumbnailFile)) return false;
   return true;
@@ -699,8 +726,7 @@ function markUnseen(
     .locationsForLibrary(libraryId)
     .filter((location) => {
       if (seen.has(location.id)) return false;
-      if (underDirectory(location.path, walked.unreadable)) return false;
-      return walked.listed.has(parentDir(location.path));
+      return !underDirectory(location.path, walked.unreadable);
     })
     .map((location) => location.id);
   const missing = repo.markMissingIds(ids, deps.now());

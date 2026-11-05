@@ -303,6 +303,154 @@ describe('review regressions', () => {
     });
   });
 
+  it('marks locations missing when their subfolder is deleted (N1)', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    db.prepare(
+      `INSERT INTO videos (id, content_hash, size_bytes, duration_ms, width, height, video_codec, thumbnail_file, created_at, updated_at)
+       VALUES ('video', 'partial', 10, 1000, 320, 240, 'h264', 'video.jpg', 't', 't')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, presence, created_at, updated_at
+       ) VALUES (
+         'loc', 'video', 'lib', 'D:\\dance\\2019\\clip.mp4', 'D:/dance/2019/clip.mp4', 'clip.mp4', 'present', 't', 't'
+       )`,
+    ).run();
+    const scan = largeDeps({ directories: ['D:\\dance'], files: [] });
+    scan.deps.walkLibrary = async () => ({
+      files: [],
+      listed: ['D:\\dance'],
+      unreadable: [],
+    });
+    const summary = await scanLibrary(db, 'lib', scan.deps, { thumbsDir: tempDir() });
+    expect(summary.missing).toBe(1);
+    expect(db.prepare(`SELECT presence FROM video_locations WHERE id = 'loc'`).get()).toEqual({
+      presence: 'missing',
+    });
+  });
+
+  it('stores the full hash on the retry after the first read fails (N2)', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    db.prepare(
+      `INSERT INTO videos (
+         id, content_hash, full_hash, size_bytes, excluded, title, created_at, updated_at
+       ) VALUES (
+         'kept', 'partial-same', 'full-same', 8000000, 1, 'Not dance',
+         '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z'
+       )`,
+    ).run();
+    const copy: FakeFile = { ...original, path: 'D:\\dance\\copy.mp4', fileId: '9' };
+    const failed = largeDeps({ directories: ['D:\\dance'], files: [copy] });
+    failed.deps.fullHash = async () => {
+      throw new Error('EIO');
+    };
+    await scanLibrary(db, 'lib', failed.deps, { thumbsDir: tempDir() });
+    const afterFailure = db
+      .prepare(`SELECT id, full_hash, metadata_error, excluded FROM videos WHERE id != 'kept'`)
+      .get() as { id: string; full_hash: string | null; metadata_error: string; excluded: number };
+    expect(afterFailure.full_hash).toBeNull();
+    expect(afterFailure.metadata_error).toMatch(/EIO/);
+    expect(afterFailure.excluded).toBe(0);
+
+    const recovered = largeDeps({ directories: ['D:\\dance'], files: [copy] });
+    recovered.thumbs.add(`${afterFailure.id}.jpg`);
+    const summary = await scanLibrary(db, 'lib', recovered.deps, { thumbsDir: tempDir() });
+    expect(summary.errors).toBe(0);
+    const videos = db.prepare(`SELECT id, excluded, full_hash, metadata_error FROM videos`).all();
+    expect(videos).toEqual([
+      { id: 'kept', excluded: 1, full_hash: 'full-same', metadata_error: null },
+    ]);
+  });
+
+  it('rewrites a case-only rename instead of adding a missing copy (N4)', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const renamed: FakeFile = { ...original, path: 'D:\\dance\\Lesson.mp4' };
+    const scan = largeDeps({ directories: ['D:\\dance'], files: [renamed] });
+    const fold = (filePath: string) => filePath.replaceAll('\\', '/').toLowerCase();
+    scan.deps.exists = (filePath) =>
+      scan.deps.isDirectory(filePath) ||
+      [renamed.path].some((candidate) => fold(candidate) === fold(filePath));
+    scan.deps.stat = async (filePath) => {
+      if (fold(filePath) !== fold(renamed.path)) {
+        const error = new Error('missing') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      }
+      return {
+        size: renamed.size,
+        mtimeNs: renamed.mtimeNs,
+        mtime: new Date('2024-06-01T00:00:00.000Z'),
+        birthtime: null,
+        fileId: renamed.fileId,
+        volumeId: renamed.volumeId,
+        fileIdStable: true,
+      };
+    };
+    db.prepare(
+      `INSERT INTO videos (
+         id, content_hash, full_hash, size_bytes, duration_ms, width, height, video_codec,
+         thumbnail_file, created_at, updated_at
+       ) VALUES (
+         'video', 'partial-same', 'full-same', 8000000, 1000, 320, 240, 'h264',
+         'video.jpg', 't', 't'
+       )`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, volume_id, file_id, size_bytes, mtime_ns,
+         presence, created_at, updated_at
+       ) VALUES (
+         'loc', 'video', 'lib', 'D:\\dance\\lesson.mp4', 'D:/dance/lesson.mp4', 'lesson.mp4',
+         ?, '1', 8000000, '10', 'present', 't', 't'
+       )`,
+    ).run(volume);
+    scan.thumbs.add('video.jpg');
+    const summary = await scanLibrary(db, 'lib', scan.deps, { thumbsDir: tempDir() });
+    expect(summary.errors).toBe(0);
+    expect(summary.added).toBe(0);
+    expect(summary.linked).toBe(0);
+    const locations = db.prepare(`SELECT path, presence FROM video_locations`).all();
+    expect(locations).toEqual([{ path: 'D:\\dance\\Lesson.mp4', presence: 'present' }]);
+  });
+
+  it('does not mark a present file missing when reading it throws (N3)', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    db.prepare(
+      `INSERT INTO videos (id, content_hash, size_bytes, created_at, updated_at)
+       VALUES ('video', 'partial', 10, 't', 't')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, presence, created_at, updated_at
+       ) VALUES (
+         'loc', 'video', 'lib', 'D:\\dance\\clip.mp4', 'D:/dance/clip.mp4', 'clip.mp4', 'present', 't', 't'
+       )`,
+    ).run();
+    const scan = largeDeps({
+      directories: ['D:\\dance'],
+      files: [{ ...original, path: 'D:\\dance\\clip.mp4', size: 10 }],
+    });
+    scan.deps.stat = async () => {
+      const error = new Error('EIO') as NodeJS.ErrnoException;
+      error.code = 'EIO';
+      throw error;
+    };
+    const summary = await scanLibrary(db, 'lib', scan.deps, { thumbsDir: tempDir() });
+    expect(summary.errors).toBe(1);
+    expect(summary.missing).toBe(0);
+    expect(db.prepare(`SELECT presence FROM video_locations WHERE id = 'loc'`).get()).toEqual({
+      presence: 'present',
+    });
+  });
+
   it('keeps the path row when a reused file id is renamed onto that path (B4)', async () => {
     const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
     databases.push(db);

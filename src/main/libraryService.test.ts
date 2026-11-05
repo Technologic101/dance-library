@@ -88,7 +88,8 @@ describe('createLibraryService', () => {
     fs.writeFileSync(video, 'video-bytes');
     const db = openCatalog(path.join(root, 'catalog.sqlite'));
     databases.push(db);
-    const service = createLibraryService(db, tempDir(), idleDeps());
+    const thumbs = tempDir();
+    const service = createLibraryService(db, thumbs, idleDeps());
     const added = await service.addPaths([source]);
     const libraryId = added.added[0]?.id;
     if (!libraryId) throw new Error('library was not added');
@@ -96,18 +97,24 @@ describe('createLibraryService', () => {
       `INSERT INTO videos (id, title, created_at, updated_at) VALUES ('vid', 'Keep me', 't', 't')`,
     ).run();
     db.prepare(
+      `INSERT INTO videos (id, thumbnail_file, created_at, updated_at) VALUES ('plain', 'plain.jpg', 't', 't')`,
+    ).run();
+    db.prepare(
       `INSERT INTO video_locations (
          id, video_id, library_id, path, filename, created_at, updated_at
-       ) VALUES ('loc', 'vid', ?, ?, 'clip.mp4', 't', 't')`,
-    ).run(libraryId, video);
+       ) VALUES ('loc', 'vid', ?, ?, 'clip.mp4', 't', 't'),
+              ('plain-loc', 'plain', ?, ?, 'other.mp4', 't', 't')`,
+    ).run(libraryId, video, libraryId, path.join(source, 'other.mp4'));
+    fs.writeFileSync(path.join(thumbs, 'plain.jpg'), 'jpeg');
 
     expect(await service.removeLibrary(libraryId)).toBe(true);
     expect(service.listLibraries()).toEqual([]);
+    expect(service.listVideos().map((item) => item.id)).toEqual(['vid']);
     expect(service.listVideos()[0]).toMatchObject({
-      id: 'vid',
       displayTitle: 'Keep me',
       locations: [],
     });
+    expect(fs.existsSync(path.join(thumbs, 'plain.jpg'))).toBe(false);
     expect(fs.readFileSync(video, 'utf8')).toBe('video-bytes');
     expect(await service.removeLibrary(libraryId)).toBe(false);
   });

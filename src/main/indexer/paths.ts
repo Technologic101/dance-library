@@ -6,7 +6,7 @@ import path from 'node:path';
  */
 export function pathKey(filePath: string): string {
   const normalized = filePath.replaceAll('\\', '/').replace(/\/+$/, '');
-  if (process.platform === 'win32') return normalized.toLocaleLowerCase();
+  if (process.platform === 'win32') return normalized.toLowerCase();
   return normalized;
 }
 
