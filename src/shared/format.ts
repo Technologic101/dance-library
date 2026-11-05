@@ -29,9 +29,18 @@ export function formatResolution(width: number | null, height: number | null): s
   return `${width}x${height}`;
 }
 
-/** Shows a stored capture timestamp without shifting its wall-clock time. */
+/**
+ * UTC instants are shown in local time, which is the day the date filter uses.
+ * A zone-less legacy value is shown as stored.
+ */
 export function formatCapturedAt(value: string | null): string {
   if (!value) return '—';
+  if (value.endsWith('Z')) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return value;
+    const pad = (part: number) => String(part).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
   const match = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}:\d{2}))?/.exec(value);
   if (!match) return value;
   const date = match[1];

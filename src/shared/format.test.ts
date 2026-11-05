@@ -31,9 +31,13 @@ describe('formatBytes', () => {
 });
 
 describe('formatCapturedAt', () => {
-  it('keeps the stored wall-clock time', () => {
+  it('shows UTC instants in local time and leaves zone-less values unchanged', () => {
     expect(formatCapturedAt('2024-03-15T19:30:45')).toBe('2024-03-15 19:30:45');
-    expect(formatCapturedAt('2024-06-01T15:04:05.000Z')).toBe('2024-06-01 15:04:05');
+    const instant = new Date('2024-06-01T15:04:05.000Z');
+    const pad = (part: number) => String(part).padStart(2, '0');
+    expect(formatCapturedAt('2024-06-01T15:04:05.000Z')).toBe(
+      `${instant.getFullYear()}-${pad(instant.getMonth() + 1)}-${pad(instant.getDate())} ${pad(instant.getHours())}:${pad(instant.getMinutes())}:${pad(instant.getSeconds())}`,
+    );
     expect(formatCapturedAt('2024-03-15')).toBe('2024-03-15');
     expect(formatCapturedAt(null)).toBe('—');
   });
@@ -50,7 +54,7 @@ describe('formatVideoMeta', () => {
         capturedAt: '2024-06-01T15:04:05.000Z',
         sizeBytes: 120 * 1024,
       }),
-    ).toBe('0:02 · 640x360 · h264 · 2024-06-01 15:04:05 · 120 KB');
+    ).toBe(`0:02 · 640x360 · h264 · ${formatCapturedAt('2024-06-01T15:04:05.000Z')} · 120 KB`);
     expect(formatResolution(null, 10)).toBe('—');
   });
 });

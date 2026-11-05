@@ -4,6 +4,8 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openCatalog } from '../db/catalog';
+import { repairSearchIndex } from '../db/searchIndex';
+import { localDayBounds } from '../../shared/search';
 import { createRepository } from './repository';
 
 const directories: string[] = [];
@@ -241,10 +243,11 @@ describe('catalog search', () => {
       instructors: ['Aline'],
     });
     const repo = createRepository(db);
+    const june = localDayBounds('2024-06-01', '2024-06-30');
     const found = repo.listVideoSummaries({
       text: 'styling',
-      capturedFrom: '2024-06-01',
-      capturedTo: '2024-06-30',
+      capturedFrom: june.from,
+      capturedTo: june.toExclusive,
       videoTypes: ['lesson'],
       styleIds: [zouk.id],
       levels: ['Intermediate'],
@@ -346,4 +349,190 @@ describe('catalog search', () => {
     expect(found).toHaveLength(150);
     expect(elapsed).toBeLessThan(250);
   });
+
+  it('keeps a near-midnight UTC instant on the local day, with an exclusive end', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    const bounds = localDayBounds('2024-06-30', '2024-06-30', 420);
+    addVideo(db, {
+      id: 'night',
+      title: 'Late social',
+      capturedAt: '2024-07-01T05:00:00.000Z',
+      libraryId: 'lib',
+      filename: 'late.mp4',
+    });
+    addVideo(db, {
+      id: 'next',
+      title: 'After midnight',
+      capturedAt: '2024-07-01T08:00:00.000Z',
+      libraryId: 'lib',
+      filename: 'next.mp4',
+    });
+    const repo = createRepository(db);
+    expect(
+      repo
+        .listVideoSummaries({ capturedFrom: bounds.from, capturedTo: bounds.toExclusive })
+        .map((item) => item.id),
+    ).toEqual(['night']);
+  });
+
+  it('treats duration preset edges as exclusive', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    addVideo(db, {
+      id: 'edge',
+      title: 'Twenty',
+      durationMs: 20 * 60 * 1000,
+      libraryId: 'lib',
+      filename: 'twenty.mp4',
+    });
+    const repo = createRepository(db);
+    expect(
+      repo.listVideoSummaries({
+        durationMinMs: 5 * 60 * 1000,
+        durationMaxMs: 20 * 60 * 1000,
+      }),
+    ).toEqual([]);
+    expect(
+      repo
+        .listVideoSummaries({
+          durationMinMs: 20 * 60 * 1000,
+          durationMaxMs: 60 * 60 * 1000,
+        })
+        .map((item) => item.id),
+    ).toEqual(['edge']);
+  });
+
+  it('sorts and labels an untitled video by its present filename', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    addVideo(db, {
+      id: 'vid',
+      libraryId: 'lib',
+      filename: 'a-missing.mp4',
+    });
+    db.prepare(`UPDATE video_locations SET presence = 'missing' WHERE video_id = 'vid'`).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, presence, created_at, updated_at
+       ) VALUES ('present', 'vid', 'lib', '/dance/lib/z-live.mp4', '/dance/lib/z-live.mp4', 'z-live.mp4', 'present', 't', 't')`,
+    ).run();
+    const item = createRepository(db).listVideoSummaries({ sort: 'title' })[0];
+    expect(item?.displayTitle).toBe('z-live.mp4');
+  });
+
+  it('follows a renamed tag and a moved tag link', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    addVideo(db, {
+      id: 'vid',
+      title: 'Clip',
+      tags: ['bodywave'],
+      libraryId: 'lib',
+      filename: 'a.mp4',
+    });
+    const repo = createRepository(db);
+    db.prepare(`UPDATE tags SET name = 'body wave' WHERE id = 'tag-bodywave'`).run();
+    expect(repo.listVideoSummaries({ text: 'bodywave' })).toEqual([]);
+    expect(repo.listVideoSummaries({ text: 'wave' }).map((item) => item.id)).toEqual(['vid']);
+    db.prepare(
+      `INSERT INTO videos (id, title, created_at, updated_at) VALUES ('other', 'Other', 't', 't')`,
+    ).run();
+    db.prepare(`UPDATE video_tags SET video_id = 'other' WHERE video_id = 'vid'`).run();
+    expect(repo.listVideoSummaries({ text: 'wave' }).map((item) => item.id)).toEqual(['other']);
+  });
+
+  it('lists facets only for videos in the current view', () => {
+    const db = open();
+    addLibrary(db, 'empty', 'Empty');
+    addLibrary(db, 'drive', 'Backup');
+    addVideo(db, {
+      id: 'shown',
+      title: 'Shown',
+      styleName: 'Zouk',
+      tags: ['styling'],
+      instructors: ['Aline'],
+      libraryId: 'drive',
+      filename: 'shown.mp4',
+    });
+    addVideo(db, {
+      id: 'hidden',
+      title: 'Hidden',
+      excluded: 1,
+      styleName: 'Waltz',
+      tags: ['secret'],
+      instructors: ['Maya'],
+      libraryId: 'drive',
+      filename: 'hidden.mp4',
+    });
+    const repo = createRepository(db);
+    const visible = repo.listFacets(false);
+    expect(visible.styles.map((style) => style.name)).toEqual(['Zouk']);
+    expect(visible.tags.map((tag) => tag.name)).toEqual(['styling']);
+    expect(visible.instructors.map((instructor) => instructor.name)).toEqual(['Aline']);
+    expect(visible.libraries.map((library) => library.label)).toEqual(['Backup']);
+    expect(repo.listFacets(true).tags.map((tag) => tag.name)).toEqual(['secret']);
+  });
+
+  it('rebuilds the search index when the full-text row count drifts', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    addVideo(db, { id: 'vid', title: 'Kizomba class', libraryId: 'lib', filename: 'kizomba.mp4' });
+    db.prepare(`DELETE FROM videos_fts`).run();
+    expect(createRepository(db).listVideoSummaries({ text: 'kizomba' })).toEqual([]);
+    repairSearchIndex(db);
+    expect(
+      createRepository(db)
+        .listVideoSummaries({ text: 'kizomba' })
+        .map((item) => item.id),
+    ).toEqual(['vid']);
+  });
+
+  it('indexes 20,000 locations by rowid quickly enough to scan', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    db.prepare(`INSERT INTO tags (id, name, created_at) VALUES ('tag-move', 'move', 't')`).run();
+    const insertVideo = db.prepare(
+      `INSERT INTO videos (id, title, created_at, updated_at) VALUES (?, 'Clip', 't', 't')`,
+    );
+    const insertLocation = db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, presence, created_at, updated_at
+       ) VALUES (?, ?, 'lib', ?, ?, ?, 'present', 't', 't')`,
+    );
+    const insertTag = db.prepare(
+      `INSERT INTO video_tags (video_id, tag_id) VALUES (?, 'tag-move')`,
+    );
+    const seedVideos = db.transaction(() => {
+      for (let index = 0; index < 20_000; index += 1) insertVideo.run(`v${index}`);
+    });
+    seedVideos();
+    const started = performance.now();
+    const seedCopies = db.transaction(() => {
+      for (let index = 0; index < 20_000; index += 1) {
+        const filename = `clip-${index}.mp4`;
+        insertLocation.run(
+          `loc${index}`,
+          `v${index}`,
+          `/dance/lib/${filename}`,
+          filename,
+          filename,
+        );
+        insertTag.run(`v${index}`);
+      }
+    });
+    seedCopies();
+    expect(performance.now() - started).toBeLessThan(20_000);
+    const repo = createRepository(db);
+    const queried = performance.now();
+    const page = repo.listVideoSummaries({
+      text: 'clip-3',
+      tagIds: ['tag-move'],
+      limit: 48,
+    });
+    expect(performance.now() - queried).toBeLessThan(1_000);
+    expect(page.length).toBeGreaterThan(0);
+    expect(page.length).toBeLessThanOrEqual(48);
+    expect(repo.countVideoSummaries({ text: 'Clip', tagIds: ['tag-move'] })).toBe(20_000);
+  }, 60_000);
 });

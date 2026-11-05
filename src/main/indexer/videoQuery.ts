@@ -3,6 +3,7 @@ import { ftsMatch } from '../../shared/search';
 
 export function videoListQuery(query: VideoQuery): {
   sql: string;
+  countSql: string;
   params: Record<string, string | number>;
 } {
   const params: Record<string, string | number> = {
@@ -16,21 +17,22 @@ export function videoListQuery(query: VideoQuery): {
   } else if (match) {
     params.match = match;
     ftsJoin = `
+      JOIN video_search_keys sk ON sk.video_id = v.id
       JOIN (
-        SELECT video_id, bm25(videos_fts) AS rank
+        SELECT rowid AS docId, bm25(videos_fts) AS rank
         FROM videos_fts
         WHERE videos_fts MATCH @match
         LIMIT -1
-      ) fts ON fts.video_id = v.id
+      ) fts ON fts.docId = sk.rowid
     `;
   }
   if (query.capturedFrom) {
     params.capturedFrom = query.capturedFrom;
-    where.push(`substr(v.captured_at, 1, 10) >= @capturedFrom`);
+    where.push(`v.captured_at >= @capturedFrom`);
   }
   if (query.capturedTo) {
     params.capturedTo = query.capturedTo;
-    where.push(`substr(v.captured_at, 1, 10) <= @capturedTo`);
+    where.push(`v.captured_at < @capturedTo`);
   }
   addIn(where, params, 'v.video_type', query.videoTypes, 'type');
   addIn(where, params, 'v.style_id', query.styleIds, 'style');
@@ -65,9 +67,13 @@ export function videoListQuery(query: VideoQuery): {
   }
   if (query.durationMaxMs != null) {
     params.durationMax = query.durationMaxMs;
-    where.push('v.duration_ms <= @durationMax');
+    where.push('v.duration_ms < @durationMax');
   }
 
+  const limit =
+    query.limit != null
+      ? `LIMIT ${Math.trunc(query.limit)} OFFSET ${Math.trunc(query.offset ?? 0)}`
+      : '';
   const sql = `
     SELECT
       v.id,
@@ -86,7 +92,15 @@ export function videoListQuery(query: VideoQuery): {
       v.level,
       v.favorite,
       MAX(s.name) AS styleName,
-      COALESCE(NULLIF(TRIM(v.title), ''), MIN(loc.filename), '') AS displayTitle,
+      COALESCE(NULLIF(TRIM(v.title), ''), (
+        SELECT loc2.filename
+        FROM video_locations loc2
+        WHERE loc2.video_id = v.id
+        ORDER BY CASE loc2.presence WHEN 'present' THEN 0 ELSE 1 END,
+                 loc2.filename COLLATE NOCASE,
+                 loc2.id
+        LIMIT 1
+      ), '') AS displayTitle,
       COALESCE((
         SELECT json_group_array(name) FROM (
           SELECT i.name AS name
@@ -124,8 +138,15 @@ export function videoListQuery(query: VideoQuery): {
     WHERE ${where.join(' AND ')}
     GROUP BY v.id
     ORDER BY ${orderBy(query.sort, Boolean(match))}
+    ${limit}
   `;
-  return { sql, params };
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM videos v
+    ${ftsJoin}
+    WHERE ${where.join(' AND ')}
+  `;
+  return { sql, countSql, params };
 }
 
 function addIn(

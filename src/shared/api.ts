@@ -102,11 +102,18 @@ export type VideoCounts = {
   excluded: number;
 };
 
+export type VideoListPage = {
+  items: VideoListItem[];
+  total: number;
+};
+
 export type VideoQuery = {
   excluded?: boolean;
   /** Matched against titles, notes, tags, and filenames. */
   text?: string;
+  /** Inclusive UTC instant for the start of a local day. */
   capturedFrom?: string;
+  /** Exclusive UTC instant for the end of a local day. */
   capturedTo?: string;
   videoTypes?: VideoType[];
   styleIds?: string[];
@@ -119,6 +126,8 @@ export type VideoQuery = {
   durationMaxMs?: number;
   favorite?: boolean;
   sort?: VideoSort;
+  limit?: number;
+  offset?: number;
 };
 
 export type CatalogFacet = { id: string; name: string };
@@ -185,8 +194,8 @@ export type DanceLibraryApi = {
   /** No-op unless the main process was started with DANCE_LIBRARY_SCREENSHOT. */
   notifyViewReady: () => Promise<void>;
   listLibraries: () => Promise<LibrarySummary[]>;
-  listVideos: (options?: VideoQuery) => Promise<VideoListItem[]>;
-  listFacets: () => Promise<CatalogFacets>;
+  listVideos: (options?: VideoQuery) => Promise<VideoListPage>;
+  listFacets: (options?: { excluded?: boolean }) => Promise<CatalogFacets>;
   countVideos: () => Promise<VideoCounts>;
   /** Opens a folder picker, then indexes each chosen folder. */
   addLibraries: () => Promise<AddLibrariesResult>;

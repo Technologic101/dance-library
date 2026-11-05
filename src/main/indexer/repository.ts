@@ -537,20 +537,58 @@ export function createRepository(db: Database.Database) {
       return rows.map(toListItem);
     },
 
-    listFacets(): CatalogFacets {
+    countVideoSummaries(query: VideoQuery = {}): number {
+      const { countSql, params } = videoListQuery({
+        ...query,
+        limit: undefined,
+        offset: undefined,
+      });
+      const row = db.prepare(countSql).get(params) as { total: number };
+      return row.total;
+    },
+
+    listFacets(excluded = false): CatalogFacets {
+      const flag = excluded ? 1 : 0;
       return {
         styles: db
-          .prepare(`SELECT id, name FROM styles ORDER BY name COLLATE NOCASE`)
-          .all() as CatalogFacets['styles'],
+          .prepare(
+            `SELECT DISTINCT s.id, s.name
+             FROM styles s
+             JOIN videos v ON v.style_id = s.id
+             WHERE v.excluded = ?
+             ORDER BY s.name COLLATE NOCASE`,
+          )
+          .all(flag) as CatalogFacets['styles'],
         instructors: db
-          .prepare(`SELECT id, name FROM instructors ORDER BY name COLLATE NOCASE`)
-          .all() as CatalogFacets['instructors'],
+          .prepare(
+            `SELECT DISTINCT i.id, i.name
+             FROM instructors i
+             JOIN video_instructors vi ON vi.instructor_id = i.id
+             JOIN videos v ON v.id = vi.video_id
+             WHERE v.excluded = ?
+             ORDER BY i.name COLLATE NOCASE`,
+          )
+          .all(flag) as CatalogFacets['instructors'],
         tags: db
-          .prepare(`SELECT id, name FROM tags ORDER BY name COLLATE NOCASE`)
-          .all() as CatalogFacets['tags'],
+          .prepare(
+            `SELECT DISTINCT t.id, t.name
+             FROM tags t
+             JOIN video_tags vt ON vt.tag_id = t.id
+             JOIN videos v ON v.id = vt.video_id
+             WHERE v.excluded = ?
+             ORDER BY t.name COLLATE NOCASE`,
+          )
+          .all(flag) as CatalogFacets['tags'],
         libraries: db
-          .prepare(`SELECT id, label FROM libraries ORDER BY label COLLATE NOCASE`)
-          .all() as CatalogFacets['libraries'],
+          .prepare(
+            `SELECT DISTINCT lib.id, lib.label
+             FROM libraries lib
+             JOIN video_locations loc ON loc.library_id = lib.id
+             JOIN videos v ON v.id = loc.video_id
+             WHERE v.excluded = ?
+             ORDER BY lib.label COLLATE NOCASE`,
+          )
+          .all(flag) as CatalogFacets['libraries'],
       };
     },
 
@@ -617,12 +655,11 @@ function toListItem(row: RawVideoRow): VideoListItem {
     if (left.presence !== right.presence) return left.presence === 'present' ? -1 : 1;
     return left.filename.localeCompare(right.filename);
   });
-  const primary = locations[0];
   const title = row.title?.trim() ? row.title.trim() : null;
   return {
     id: row.id,
     title,
-    displayTitle: title ?? primary?.filename ?? row.displayTitle ?? 'Untitled',
+    displayTitle: row.displayTitle.trim() ? row.displayTitle.trim() : (title ?? 'Untitled'),
     sizeBytes: row.sizeBytes,
     durationMs: row.durationMs,
     width: row.width,

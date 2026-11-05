@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ftsMatch, parseVideoQuery, toVideoQuery, emptyBrowseFilters } from './search';
+import {
+  emptyBrowseFilters,
+  filtersAreActive,
+  ftsMatch,
+  localDayBounds,
+  parseVideoQuery,
+  toVideoQuery,
+} from './search';
 
 describe('search query', () => {
   it('turns typed words into a prefix query and drops operators', () => {
@@ -18,7 +25,7 @@ describe('search query', () => {
         levels: ['Intermediate'],
         styleIds: ['builtin:zouk', 'style name'],
         favorite: true,
-        capturedFrom: '2024-06-01',
+        capturedFrom: '2024-06-01T07:00:00.000Z',
         capturedTo: '2024-13-40',
         durationMinMs: 5 * 60 * 1000,
         durationMaxMs: -1,
@@ -30,7 +37,7 @@ describe('search query', () => {
       levels: ['Intermediate'],
       styleIds: ['builtin:zouk'],
       favorite: true,
-      capturedFrom: '2024-06-01',
+      capturedFrom: '2024-06-01T07:00:00.000Z',
       durationMinMs: 5 * 60 * 1000,
     });
   });
@@ -52,6 +59,19 @@ describe('search query', () => {
       favorite: true,
       durationMinMs: 5 * 60 * 1000,
       durationMaxMs: 20 * 60 * 1000,
+      limit: 48,
     });
+  });
+
+  it('turns a local day into an inclusive UTC range', () => {
+    expect(localDayBounds('2024-06-30', '2024-06-30', 420)).toEqual({
+      from: '2024-06-30T07:00:00.000Z',
+      toExclusive: '2024-07-01T07:00:00.000Z',
+    });
+  });
+
+  it('does not treat a sort change as a filter', () => {
+    expect(filtersAreActive({ ...emptyBrowseFilters(), sort: 'oldest' })).toBe(false);
+    expect(filtersAreActive({ ...emptyBrowseFilters(), text: 'zouk' })).toBe(true);
   });
 });

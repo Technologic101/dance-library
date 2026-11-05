@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRepository } from '../indexer/repository';
-import { applyMigrations, migrate } from './migrate';
+import { applyMigrations, migrate, migrations } from './migrate';
 import { migration001 } from './migrations/001_init';
 import { migration002 } from './migrations/002_catalog';
 
@@ -55,6 +55,7 @@ describe('catalog schema', () => {
       'video_links',
       'video_locations',
       'video_redirects',
+      'video_search_keys',
       'video_tags',
       'videos',
       'videos_fts',
@@ -160,5 +161,42 @@ describe('catalog schema', () => {
     expect(link).toEqual({ video_id: 'keep', other_video_id: 'other' });
     expect(redirect).toEqual({ to_id: 'keep' });
     expect(db.prepare(`SELECT id FROM videos WHERE id = 'drop'`).get()).toBeUndefined();
+  });
+
+  it('backfills search for videos that existed before full-text indexing', () => {
+    const db = openMemory();
+    applyMigrations(
+      db,
+      migrations.filter((migration) => migration.id <= 4),
+    );
+    db.prepare(
+      `INSERT INTO libraries (id, path, label, created_at, updated_at) VALUES ('lib', '/dance', 'dance', 't', 't')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO videos (
+         id, title, notes, captured_at, captured_at_source, created_at, updated_at
+       ) VALUES (
+         'vid', 'Kizomba class', 'keep the notes', '2024-06-30T22:00:00', 'filename', 't', 't'
+       )`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, filename, presence, created_at, updated_at
+       ) VALUES
+         ('a', 'vid', 'lib', '/dance/kizomba-demo.mp4', 'kizomba-demo.mp4', 'present', 't', 't'),
+         ('b', 'vid', 'lib', '/dance/copy.mp4', 'copy.mp4', 'present', 't', 't')`,
+    ).run();
+    db.prepare(`INSERT INTO tags (id, name, created_at) VALUES ('tag-wave', 'wave', 't')`).run();
+    db.prepare(`INSERT INTO video_tags (video_id, tag_id) VALUES ('vid', 'tag-wave')`).run();
+
+    expect(migrate(db)).toEqual(['005_search']);
+    const repo = createRepository(db);
+    expect(repo.listVideoSummaries({ text: 'kizomba' }).map((item) => item.id)).toEqual(['vid']);
+    expect(repo.listVideoSummaries({ text: 'notes' }).map((item) => item.id)).toEqual(['vid']);
+    expect(repo.listVideoSummaries({ text: 'wave' }).map((item) => item.id)).toEqual(['vid']);
+    const captured = db.prepare(`SELECT captured_at AS capturedAt FROM videos`).get() as {
+      capturedAt: string;
+    };
+    expect(captured.capturedAt.endsWith('Z')).toBe(true);
   });
 });

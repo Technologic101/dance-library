@@ -9,7 +9,7 @@ import type {
   ScanSummary,
   VideoChangeResult,
   VideoCounts,
-  VideoListItem,
+  VideoListPage,
   VideoQuery,
   CatalogFacets,
 } from '../shared/api';
@@ -46,12 +46,18 @@ export function createLibraryService(
       return repo.listLibrarySummaries();
     },
 
-    listVideos(options?: VideoQuery): VideoListItem[] {
-      return repo.listVideoSummaries(options ?? {});
+    listVideos(options?: VideoQuery): VideoListPage {
+      const query = { ...options };
+      if (query.limit == null) query.limit = 48;
+      if (query.offset == null) query.offset = 0;
+      return {
+        items: repo.listVideoSummaries(query),
+        total: repo.countVideoSummaries(query),
+      };
     },
 
-    listFacets(): CatalogFacets {
-      return repo.listFacets();
+    listFacets(options?: { excluded?: boolean }): CatalogFacets {
+      return repo.listFacets(options?.excluded ?? false);
     },
 
     countVideos(): VideoCounts {

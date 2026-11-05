@@ -1,4 +1,4 @@
-import type { Level, VideoQuery, VideoSort, VideoType } from './api';
+import type { CatalogFacets, Level, VideoQuery, VideoSort, VideoType } from './api';
 import { levels, videoSorts, videoTypes } from './api';
 
 export const videoTypeLabels: Record<VideoType, string> = {
@@ -11,12 +11,15 @@ export const videoTypeLabels: Record<VideoType, string> = {
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const ID = /^[A-Za-z0-9:_-]{1,80}$/;
 
+/** Upper bounds are exclusive, so a clip of exactly 20:00 is only in the next bucket. */
 export const durationPresets = [
-  { id: 'under-5', label: 'Under 5 min', minMs: 0, maxMs: 5 * 60 * 1000 - 1 },
+  { id: 'under-5', label: 'Under 5 min', minMs: 0, maxMs: 5 * 60 * 1000 },
   { id: '5-20', label: '5-20 min', minMs: 5 * 60 * 1000, maxMs: 20 * 60 * 1000 },
   { id: '20-60', label: '20-60 min', minMs: 20 * 60 * 1000, maxMs: 60 * 60 * 1000 },
-  { id: 'over-60', label: 'Over 60 min', minMs: 60 * 60 * 1000 + 1, maxMs: null },
+  { id: 'over-60', label: 'Over 60 min', minMs: 60 * 60 * 1000, maxMs: null },
 ] as const;
+
+export const videoPageSize = 48;
 
 export type DurationPreset = (typeof durationPresets)[number]['id'];
 
@@ -54,15 +57,46 @@ export function emptyBrowseFilters(): BrowseFilters {
 
 export function filtersAreActive(filters: BrowseFilters): boolean {
   const empty = emptyBrowseFilters();
-  return (Object.keys(empty) as (keyof BrowseFilters)[]).some((key) => filters[key] !== empty[key]);
+  return (Object.keys(empty) as (keyof BrowseFilters)[]).some(
+    (key) => key !== 'sort' && filters[key] !== empty[key],
+  );
+}
+
+/** Drops a style, instructor, tag, or folder that is no longer in the facet list. */
+export function dropMissingFacets(filters: BrowseFilters, facets: CatalogFacets): BrowseFilters {
+  const styleId = facets.styles.some((style) => style.id === filters.styleId)
+    ? filters.styleId
+    : '';
+  const instructorId = facets.instructors.some(
+    (instructor) => instructor.id === filters.instructorId,
+  )
+    ? filters.instructorId
+    : '';
+  const tagId = facets.tags.some((tag) => tag.id === filters.tagId) ? filters.tagId : '';
+  const libraryId = facets.libraries.some((library) => library.id === filters.libraryId)
+    ? filters.libraryId
+    : '';
+  if (
+    styleId === filters.styleId &&
+    instructorId === filters.instructorId &&
+    tagId === filters.tagId &&
+    libraryId === filters.libraryId
+  ) {
+    return filters;
+  }
+  return { ...filters, styleId, instructorId, tagId, libraryId };
 }
 
 export function toVideoQuery(filters: BrowseFilters, excluded: boolean): VideoQuery {
   const query: VideoQuery = { excluded, sort: filters.sort };
   const text = filters.text.trim();
   if (text) query.text = text;
-  if (isDay(filters.capturedFrom)) query.capturedFrom = filters.capturedFrom;
-  if (isDay(filters.capturedTo)) query.capturedTo = filters.capturedTo;
+  const bounds = localDayBounds(
+    isDay(filters.capturedFrom) ? filters.capturedFrom : undefined,
+    isDay(filters.capturedTo) ? filters.capturedTo : undefined,
+  );
+  if (bounds.from) query.capturedFrom = bounds.from;
+  if (bounds.toExclusive) query.capturedTo = bounds.toExclusive;
   if (filters.videoType) query.videoTypes = [filters.videoType];
   if (filters.styleId) query.styleIds = [filters.styleId];
   if (filters.instructorId) query.instructorIds = [filters.instructorId];
@@ -73,6 +107,7 @@ export function toVideoQuery(filters: BrowseFilters, excluded: boolean): VideoQu
   const preset = durationPresets.find((item) => item.id === filters.duration);
   if (preset && preset.minMs > 0) query.durationMinMs = preset.minMs;
   if (preset && preset.maxMs != null) query.durationMaxMs = preset.maxMs;
+  query.limit = videoPageSize;
   return query;
 }
 
@@ -102,8 +137,8 @@ export function parseVideoQuery(value: unknown): VideoQuery {
     const text = source.text.trim().slice(0, 200);
     if (text) query.text = text;
   }
-  const from = day(source.capturedFrom);
-  const to = day(source.capturedTo);
+  const from = instant(source.capturedFrom);
+  const to = instant(source.capturedTo);
   if (from) query.capturedFrom = from;
   if (to) query.capturedTo = to;
   const types = enums(source.videoTypes, videoTypes);
@@ -126,7 +161,33 @@ export function parseVideoQuery(value: unknown): VideoQuery {
   if (typeof source.sort === 'string' && videoSorts.some((sort) => sort === source.sort)) {
     query.sort = source.sort as VideoSort;
   }
+  const limit = boundedInt(source.limit, 1, 200);
+  const offset = boundedInt(source.offset, 0, 1_000_000);
+  if (limit != null) query.limit = limit;
+  if (offset != null) query.offset = offset;
   return query;
+}
+
+/**
+ * Local calendar days as UTC instants. `toExclusive` is the next local midnight
+ * after `toDay`, so the selected end day is included.
+ * `offsetMinutes` is `Date.getTimezoneOffset()` (minutes to add to local to get UTC).
+ */
+export function localDayBounds(
+  fromDay?: string,
+  toDay?: string,
+  offsetMinutes = new Date().getTimezoneOffset(),
+): { from?: string; toExclusive?: string } {
+  return {
+    from: fromDay ? instantAtLocalMidnight(fromDay, 0, offsetMinutes) : undefined,
+    toExclusive: toDay ? instantAtLocalMidnight(toDay, 1, offsetMinutes) : undefined,
+  };
+}
+
+function instantAtLocalMidnight(day: string, addDays: number, offsetMinutes: number): string {
+  const [year, month, date] = day.split('-').map(Number);
+  const utc = Date.UTC(year ?? 0, (month ?? 1) - 1, (date ?? 1) + addDays) + offsetMinutes * 60_000;
+  return new Date(utc).toISOString();
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -179,6 +240,21 @@ function ids(value: unknown): string[] {
     if (picked.length === 20) break;
   }
   return picked;
+}
+
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+
+function instant(value: unknown): string | null {
+  if (typeof value !== 'string' || !INSTANT.test(value)) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed).toISOString();
+}
+
+function boundedInt(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return null;
+  if (value < min || value > max) return null;
+  return value;
 }
 
 function milliseconds(value: unknown): number | null {

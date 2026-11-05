@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppHealth, CatalogFacets, LibrarySummary, VideoListItem } from '../shared/api';
+import { formatVideoMeta } from '../shared/format';
 import { App } from './App';
 
 const health: AppHealth = {
@@ -96,7 +97,7 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
     getHealth: async () => health,
     notifyViewReady: notify,
     listLibraries: async () => [library],
-    listVideos: async () => [present, missing],
+    listVideos: async () => ({ items: [present, missing], total: 2 }),
     listFacets: async () => emptyFacets,
     countVideos: async () => ({ visible: 2, excluded: 0 }),
     excludeVideos: async () => ({ changed: 1, requested: 1 }),
@@ -145,7 +146,7 @@ describe('App', () => {
     render(<App />);
     expect(screen.getAllByText(/checking the runtime/i).length).toBeGreaterThan(0);
     expect(await screen.findByRole('heading', { name: 'lesson-basic.mp4' })).toBeTruthy();
-    expect(screen.getByText('0:02 · 640x360 · h264 · 2024-06-01 15:04:05 · 120 KB')).toBeTruthy();
+    expect(screen.getByText(formatVideoMeta(present))).toBeTruthy();
     expect(screen.getByText('2 copies')).toBeTruthy();
     expect(screen.getByText('Online · /dance/lesson-basic-copy.mp4')).toBeTruthy();
     expect(screen.getByText(/Missing/)).toBeTruthy();
@@ -212,8 +213,8 @@ describe('App', () => {
 
   it('filters the catalog from the search box', async () => {
     const listVideos = vi.fn(async (query) => {
-      if (query?.text === 'zouk') return [present];
-      return [present, missing];
+      const items = query?.text === 'zouk' ? [present] : [present, missing];
+      return { items, total: items.length };
     });
     api({
       listVideos,
@@ -271,10 +272,51 @@ describe('App', () => {
     );
   });
 
+  it('clears a failed load after a later search succeeds', async () => {
+    let fail = true;
+    api({
+      listVideos: async (query) => {
+        if (fail) throw new Error('SQLITE_BUSY');
+        const items = query?.text ? [present] : [present, missing];
+        return { items, total: items.length };
+      },
+    });
+    render(<App />);
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'SQLITE_BUSY');
+    fail = false;
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
+      target: { value: 'zouk' },
+    });
+    expect(await screen.findByRole('heading', { name: 'lesson-basic.mp4' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not let an older page replace a newer search', async () => {
+    let resolveFirst: (page: { items: VideoListItem[]; total: number }) => void = () => {};
+    api({
+      listVideos: (query) => {
+        if (query?.text === 'bolero') return Promise.resolve({ items: [present], total: 1 });
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      },
+    });
+    render(<App />);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
+      target: { value: 'bolero' },
+    });
+    expect(await screen.findByRole('heading', { name: 'lesson-basic.mp4' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'gone.mp4' })).toBeNull();
+    resolveFirst({ items: [present, missing], total: 2 });
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'gone.mp4' })).toBeNull();
+    });
+  });
+
   it('shows an empty catalog', async () => {
     api({
       listLibraries: async () => [],
-      listVideos: async () => [],
+      listVideos: async () => ({ items: [], total: 0 }),
     });
     render(<App />);
     expect(await screen.findByText(/No videos yet/)).toBeTruthy();

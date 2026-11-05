@@ -67,6 +67,23 @@ export function captureDateFromFilename(filename: string): string | null {
   return null;
 }
 
+/** Interprets a zone-less wall clock as local time and stores a UTC instant. */
+export function wallClockToUtc(value: string): string {
+  if (value.endsWith('Z')) return value;
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2}))?/.exec(value);
+  if (!match) return value;
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4] ?? 0),
+    Number(match[5] ?? 0),
+    Number(match[6] ?? 0),
+  );
+  if (!Number.isFinite(date.getTime())) return value;
+  return date.toISOString();
+}
+
 export function fileTimeIso(birthtime: Date | null, mtime: Date | null): string | null {
   if (birthtime && isReasonableInstant(birthtime)) return birthtime.toISOString();
   if (mtime && isReasonableInstant(mtime)) return mtime.toISOString();
@@ -87,7 +104,7 @@ export function chooseCaptureDate(input: {
     return { capturedAt: input.metadataCreatedAt, source: 'metadata' };
   }
   const fromName = captureDateFromFilename(input.filename);
-  if (fromName) return { capturedAt: fromName, source: 'filename' };
+  if (fromName) return { capturedAt: wallClockToUtc(fromName), source: 'filename' };
   const fromFile = fileTimeIso(input.fileCreatedAt, input.fileModifiedAt);
   if (fromFile) return { capturedAt: fromFile, source: 'file_time' };
   return { capturedAt: null, source: null };
