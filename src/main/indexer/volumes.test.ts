@@ -172,11 +172,14 @@ describe('resolveLibraryPath', () => {
 });
 
 describe('listMounts', () => {
+  // Windows WMI and macOS diskutil sometimes take longer than Vitest's 5s default.
+  // This stays above the production listing timeout, and a timed-out listing still
+  // fails here because it comes back empty.
   it('describes a real directory on this machine', async () => {
     const mounts = await listMounts();
     expect(mounts.length).toBeGreaterThan(0);
     const described = describePath(path.resolve(os.tmpdir()), mounts);
     expect(described?.volumeId).toBeTruthy();
     expect(described?.relPath.length).toBeGreaterThan(0);
-  });
+  }, 30_000);
 });

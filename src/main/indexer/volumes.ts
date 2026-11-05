@@ -286,13 +286,16 @@ export function describePath(filePath: string, mounts: readonly Mount[]): Volume
   return describePosixPath(path.resolve(filePath), mounts);
 }
 
+/** A hung volume query must give up. An empty result means the listing is unknown, not that every library is offline. */
+const MOUNT_LIST_TIMEOUT_MS = 20_000;
+
 export async function listMounts(): Promise<Mount[]> {
   try {
     if (process.platform === 'win32') return await listWindowsMounts();
     if (process.platform === 'darwin') return await listMacMounts();
     return listLinuxMounts();
   } catch (error) {
-    console.error('[dance-library] volume listing failed', error);
+    console.error('[dance-library] volume listing failed; treating mounts as unknown', error);
     return [];
   }
 }
@@ -308,14 +311,17 @@ async function listWindowsMounts(): Promise<Mount[]> {
       '-Command',
       'Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType != 4" | Select-Object DeviceID, VolumeSerialNumber | ConvertTo-Csv -NoTypeInformation',
     ],
-    { windowsHide: true, timeout: 15_000 },
+    { windowsHide: true, timeout: MOUNT_LIST_TIMEOUT_MS, killSignal: 'SIGKILL' },
   );
   return parseWindowsVolumeCsv(stdout);
 }
 
 async function listMacMounts(): Promise<Mount[]> {
   try {
-    const { stdout } = await execFileAsync('diskutil', ['info', '-all'], { timeout: 20_000 });
+    const { stdout } = await execFileAsync('diskutil', ['info', '-all'], {
+      timeout: MOUNT_LIST_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
     const mounts = parseDiskutilMounts(stdout);
     if (mounts.length > 0) return mounts;
   } catch (error) {
