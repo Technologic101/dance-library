@@ -5,13 +5,20 @@ import { probeVideo } from './ffprobe';
 import type { IndexedStat, ScanDeps } from './scan';
 import { writeThumbnail } from './thumbnails';
 import { directoryReadable, walkVideos } from './walk';
-import { describePath, fileIdIsStable, isStableVolumeId, listMounts, type Mount } from './volumes';
+import {
+  describePath,
+  fileIdIsStable,
+  isStableVolumeId,
+  listMounts,
+  windowsVolumeIdFromSerial,
+  type Mount,
+} from './volumes';
 import { walkLibrary } from './walk';
 
 /** Real filesystem, ffprobe, and ffmpeg. Video files are opened read-only. */
 export function createScanDeps(thumbsDir: string): ScanDeps {
   let mounts: Mount[] | null = null;
-  return {
+  const deps: ScanDeps = {
     listMounts: async () => {
       mounts = await listMounts();
       return mounts;
@@ -36,7 +43,10 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
     directoryHasEntries: directoryHasEntries,
     walkVideos,
     walkLibrary,
-    stat: async (filePath) => statIndexedFile(filePath, mounts ?? (mounts = await listMounts())),
+    stat: async (filePath) => {
+      if (!mounts) mounts = await deps.listMounts();
+      return statIndexedFile(filePath, mounts);
+    },
     hash: async (filePath) => {
       const hashed = await partialContentHash(filePath);
       return { hash: hashed.hash, kind: hashed.kind };
@@ -50,6 +60,7 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
     },
     now: () => new Date().toISOString(),
   };
+  return deps;
 }
 
 const ROOT_LITTER = new Set([
@@ -89,13 +100,18 @@ export async function statIndexedFile(
   const size = Number(stat.size);
   if (!Number.isSafeInteger(size)) throw new Error('File is too large to catalog');
   const location = describePath(filePath, mounts);
+  let volumeId = isStableVolumeId(location?.volumeId) ? location.volumeId : null;
+  // Windows reports the volume serial on stat.dev even when the mount listing failed.
+  if (!volumeId && process.platform === 'win32' && stat.dev > 0n) {
+    volumeId = windowsVolumeIdFromSerial(stat.dev);
+  }
   return {
     size,
     mtimeNs: stat.mtimeNs.toString(),
     mtime: new Date(Number(stat.mtimeNs / 1_000_000n)),
     birthtime: stat.birthtimeNs > 0n ? new Date(Number(stat.birthtimeNs / 1_000_000n)) : null,
     fileId: stat.ino > 0n ? stat.ino.toString(10) : null,
-    volumeId: isStableVolumeId(location?.volumeId) ? location.volumeId : null,
+    volumeId,
     fileIdStable: fileIdIsStable(location?.fsType),
   };
 }

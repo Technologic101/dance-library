@@ -167,8 +167,12 @@ export async function scanLibrary(
       if (repo.countLocations(library.id) > 0) {
         resolved = { availability: 'offline', ...savedVolume };
       }
-    } else if (!(await rootVolumeMatches(library.volumeId, library.path, deps))) {
-      resolved = { availability: 'offline', ...savedVolume };
+    } else {
+      const verdict = await rootVolumeVerdict(library.volumeId, library.path, deps);
+      const proven =
+        verdict === 'match' ||
+        (verdict === 'unknown' && (await filesStillThere(repo, deps, library.id)));
+      if (!proven) resolved = { availability: 'offline', ...savedVolume };
     }
   } else if (resolved.availability === 'offline' && deps.isDirectory(library.path)) {
     if (await filesStillThere(repo, deps, library.id)) {
@@ -323,7 +327,15 @@ async function indexFile(
   if (stat.size === 0) {
     if (location) {
       repo.updateLocation(
-        locationWrite(location.id, location.videoId, input, stat, filename, deps),
+        locationWrite(
+          location.id,
+          location.videoId,
+          input,
+          stat,
+          filename,
+          deps,
+          location.volumeId,
+        ),
       );
       input.seen.add(location.id);
     }
@@ -332,7 +344,9 @@ async function indexFile(
 
   const currentVideo = location ? repo.getVideo(location.videoId) : null;
   if (location && currentVideo && canSkipProbe(location, currentVideo, stat, deps)) {
-    repo.updateLocation(locationWrite(location.id, location.videoId, input, stat, filename, deps));
+    repo.updateLocation(
+      locationWrite(location.id, location.videoId, input, stat, filename, deps, location.volumeId),
+    );
     input.seen.add(location.id);
     return changedLocation(location, input.filePath, input.libraryId) ? 'updated' : 'unchanged';
   }
@@ -454,8 +468,9 @@ async function indexFile(
     const moved = !location
       ? claimGoneLocation(repo, deps, videoId, input.seen, input.libraryId)
       : null;
-    const locationId = location?.id ?? moved?.id ?? randomUUID();
-    const write = locationWrite(locationId, videoId, input, stat, filename, deps);
+    const kept = location ?? moved;
+    const locationId = kept?.id ?? randomUUID();
+    const write = locationWrite(locationId, videoId, input, stat, filename, deps, kept?.volumeId);
     if (location || moved) repo.updateLocation(write);
     else repo.insertLocation(write);
     input.seen.add(locationId);
@@ -632,7 +647,8 @@ async function filesStillThere(
     if (!deps.exists(location.path)) continue;
     try {
       const stat = await deps.stat(location.path);
-      if (location.sizeBytes == null || stat.size === location.sizeBytes) matched += 1;
+      if (!sampleConfirms(location, stat)) continue;
+      matched += 1;
     } catch {
       // A path that cannot be stated is not evidence this is the same disk.
     }
@@ -640,18 +656,28 @@ async function filesStillThere(
   return matched > 0;
 }
 
-async function rootVolumeMatches(
+function sampleConfirms(location: LocationRecord, stat: IndexedStat): boolean {
+  if (location.sizeBytes != null && stat.size !== location.sizeBytes) return false;
+  if (location.fileId && stat.fileId && location.fileId !== stat.fileId) return false;
+  return location.sizeBytes != null || Boolean(location.fileId && stat.fileId);
+}
+
+/** A null id is unknown. Only two known, different ids are a mismatch. */
+async function rootVolumeVerdict(
   savedVolumeId: string | null,
   root: string,
   deps: ScanDeps,
-): Promise<boolean> {
-  if (!isStableVolumeId(savedVolumeId)) return true;
+): Promise<'match' | 'mismatch' | 'unknown'> {
+  let observed: string | null = null;
   try {
     const stat = await deps.stat(root);
-    return stat.volumeId === savedVolumeId;
+    observed = isStableVolumeId(stat.volumeId) ? stat.volumeId : null;
   } catch {
-    return false;
+    return 'unknown';
   }
+  const saved = isStableVolumeId(savedVolumeId) ? savedVolumeId : null;
+  if (!observed || !saved) return 'unknown';
+  return observed === saved ? 'match' : 'mismatch';
 }
 
 function mostPresentWouldBeMissing(
@@ -733,6 +759,7 @@ function locationWrite(
   stat: IndexedStat,
   filename: string,
   deps: ScanDeps,
+  keptVolumeId?: string | null,
 ) {
   return {
     id,
@@ -740,7 +767,7 @@ function locationWrite(
     libraryId: input.libraryId,
     path: input.filePath,
     filename,
-    volumeId: stat.volumeId,
+    volumeId: stat.volumeId ?? keptVolumeId ?? null,
     fileId: stat.fileId,
     sizeBytes: stat.size,
     mtimeNs: stat.mtimeNs,

@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createScanDeps } from './fsDeps';
+import { createScanDeps, statIndexedFile } from './fsDeps';
+import { windowsVolumeIdFromSerial } from './volumes';
 
 const directories: string[] = [];
 
@@ -29,5 +30,17 @@ describe('directoryHasEntries', () => {
     fs.writeFileSync(path.join(folder, 'clip.mp4'), 'x');
     expect(await deps.directoryHasEntries(folder)).toBe(true);
     expect(await deps.directoryHasEntries(path.join(folder, 'missing'))).toBeNull();
+  });
+
+  it('leaves the volume unknown when the mount listing is empty, except for a windows serial', async () => {
+    const file = path.join(tempDir(), 'clip.mp4');
+    fs.writeFileSync(file, 'x');
+    const stat = await statIndexedFile(file, []);
+    if (process.platform === 'win32') {
+      const raw = await fs.promises.stat(file, { bigint: true });
+      expect(stat.volumeId).toBe(raw.dev > 0n ? windowsVolumeIdFromSerial(raw.dev) : null);
+    } else {
+      expect(stat.volumeId).toBeNull();
+    }
   });
 });

@@ -4,6 +4,8 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openCatalog } from '../db/catalog';
+import { createScanDeps, statIndexedFile } from './fsDeps';
+import { pathKey } from './paths';
 import { scanLibrary, type IndexedStat, type ScanDeps } from './scan';
 import { describeWindowsPath, type Mount } from './volumes';
 
@@ -63,6 +65,8 @@ function largeDeps(input: { files: FakeFile[]; directories: string[]; failHash?:
       }
     },
     stat: async (filePath) => {
+      const listed = await deps.listMounts();
+      const named = listed.length > 0;
       if (input.directories.includes(filePath)) {
         return {
           size: 0,
@@ -70,7 +74,7 @@ function largeDeps(input: { files: FakeFile[]; directories: string[]; failHash?:
           mtime: new Date('2024-06-01T00:00:00.000Z'),
           birthtime: null,
           fileId: null,
-          volumeId: volume,
+          volumeId: named ? volume : null,
           fileIdStable: true,
         };
       }
@@ -86,7 +90,7 @@ function largeDeps(input: { files: FakeFile[]; directories: string[]; failHash?:
         mtime: new Date('2024-06-01T00:00:00.000Z'),
         birthtime: null,
         fileId: file.fileId,
-        volumeId: file.volumeId,
+        volumeId: named ? file.volumeId : null,
         fileIdStable: file.fileIdStable !== false,
       };
       return stat;
@@ -609,9 +613,12 @@ describe('review regressions', () => {
       path: original.path,
       presence: 'present',
     });
+    expect(db.prepare(`SELECT volume_id AS volumeId FROM video_locations`).get()).toEqual({
+      volumeId: volume,
+    });
   });
 
-  it('stays online and relinks when sampled files moved inside the library', async () => {
+  it('stays offline when an empty listing cannot prove the disk and the sampled file moved', async () => {
     const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
     databases.push(db);
     addLibrary(db);
@@ -619,16 +626,6 @@ describe('review regressions', () => {
     await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
     const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
     db.prepare(`UPDATE videos SET title = 'Warmup' WHERE id = ?`).run(id);
-    db.prepare(
-      `INSERT INTO videos (id, created_at, updated_at) VALUES ('gone-video', 't', 't')`,
-    ).run();
-    for (let index = 0; index < 6; index += 1) {
-      db.prepare(
-        `INSERT INTO video_locations (
-           id, video_id, library_id, path, filename, presence, last_scan_generation, created_at, updated_at
-         ) VALUES (?, 'gone-video', 'lib', ?, 'old.mp4', 'missing', 0, 't', 't')`,
-      ).run(`missing-${index}`, `D:\\dance\\gone-${index}.mp4`);
-    }
 
     const moved: FakeFile = { ...original, path: 'D:\\dance\\sorted\\clip.mp4' };
     const second = largeDeps({
@@ -638,17 +635,50 @@ describe('review regressions', () => {
     second.deps.listMounts = async () => [];
     second.thumbs.add(`${id}.jpg`);
     const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
-    expect(summary.offline).toBe(0);
-    expect(summary.missing).toBe(0);
+    expect(summary.offline).toBe(1);
+    expect(summary.discovered).toBe(0);
     expect(db.prepare(`SELECT availability FROM libraries`).get()).toEqual({
-      availability: 'online',
+      availability: 'offline',
     });
     expect(db.prepare(`SELECT title FROM videos WHERE id = ?`).get(id)).toEqual({
       title: 'Warmup',
     });
+    expect(db.prepare(`SELECT path, presence FROM video_locations`).all()).toEqual([
+      { path: original.path, presence: 'present' },
+    ]);
+  });
+
+  it('relinks a moved file and keeps its volume id when the root volume still matches', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const first = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+
+    const moved: FakeFile = { ...original, path: 'D:\\dance\\sorted\\clip.mp4' };
+    const second = largeDeps({
+      directories: ['D:\\dance', 'D:\\dance\\sorted'],
+      files: [moved],
+    });
+    second.deps.listMounts = async () => [];
+    const stated = second.deps.stat;
+    second.deps.stat = async (filePath) => {
+      const stat = await stated(filePath);
+      if (filePath === 'D:\\dance') return { ...stat, volumeId: volume };
+      return stat;
+    };
+    second.thumbs.add(`${id}.jpg`);
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+    expect(summary.offline).toBe(0);
+    expect(summary.missing).toBe(0);
     expect(
-      db.prepare(`SELECT path, presence FROM video_locations WHERE video_id = ?`).get(id),
-    ).toEqual({ path: moved.path, presence: 'present' });
+      db.prepare(`SELECT path, presence, volume_id AS volumeId FROM video_locations`).get(),
+    ).toEqual({
+      path: moved.path,
+      presence: 'present',
+      volumeId: volume,
+    });
   });
 
   it('does not rewrite a same-library hard link that is not a case alias', async () => {
@@ -838,6 +868,12 @@ describe('review regressions', () => {
     };
     const second = largeDeps({ directories: ['D:\\dance'], files: [stranger] });
     second.deps.listMounts = async () => [];
+    const stated = second.deps.stat;
+    second.deps.stat = async (filePath) => {
+      const stat = await stated(filePath);
+      if (filePath === 'D:\\dance') return { ...stat, volumeId: volume };
+      return stat;
+    };
     const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
     expect(summary.missing).toBe(0);
     expect(summary.errors).toBe(1);
@@ -848,6 +884,104 @@ describe('review regressions', () => {
     });
     expect(db.prepare(`SELECT last_error AS lastError FROM libraries`).get()).toMatchObject({
       lastError: expect.stringMatching(/not marked missing/i),
+    });
+  });
+
+  it('stays online through the real stat when the mount listing is empty and the file is still there', async () => {
+    const root = tempDir();
+    const clip = path.join(root, 'clip.mp4');
+    fs.writeFileSync(clip, 'dance-clip');
+    const thumbs = tempDir();
+    const deps = createScanDeps(thumbs);
+    deps.listMounts = async () => [];
+    deps.hash = async () => ({ hash: 'partial-real', kind: 'test' });
+    deps.hashCoversFile = () => true;
+    deps.fullHash = async () => 'full-real';
+    deps.probe = async () => ({
+      durationMs: 1000,
+      width: 320,
+      height: 240,
+      videoCodec: 'h264',
+      metadataCreatedAt: null,
+      error: null,
+    });
+    deps.writeThumbnail = async () => false;
+
+    const observed = await statIndexedFile(clip, []);
+    const savedId = observed.volumeId ?? 'uuid:catalog-disk';
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    db.prepare(
+      `INSERT INTO libraries (id, path, volume_id, label, availability, created_at, updated_at)
+       VALUES ('lib', ?, ?, 'dance', 'online', 't', 't')`,
+    ).run(root, savedId);
+    db.prepare(
+      `INSERT INTO videos (id, content_hash, full_hash, size_bytes, created_at, updated_at)
+       VALUES ('video', 'partial-real', 'full-real', ?, 't', 't')`,
+    ).run(observed.size);
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, volume_id, file_id, size_bytes,
+         presence, created_at, updated_at
+       ) VALUES (
+         'loc', 'video', 'lib', ?, ?, 'clip.mp4', ?, ?, ?, 'present', 't', 't'
+       )`,
+    ).run(clip, pathKey(clip), savedId, observed.fileId, observed.size);
+
+    const summary = await scanLibrary(db, 'lib', deps, { thumbsDir: thumbs });
+    expect(summary.offline).toBe(0);
+    expect(db.prepare(`SELECT availability FROM libraries`).get()).toEqual({
+      availability: 'online',
+    });
+    expect(
+      db.prepare(`SELECT path, presence, volume_id AS volumeId FROM video_locations`).get(),
+    ).toEqual({
+      path: clip,
+      presence: 'present',
+      volumeId: savedId,
+    });
+  });
+
+  it('stays offline through the real stat when the mount listing is empty and the file is gone', async () => {
+    const root = tempDir();
+    fs.writeFileSync(path.join(root, 'other.mp4'), 'stranger');
+    const missing = path.join(root, 'gone.mp4');
+    const thumbs = tempDir();
+    const deps = createScanDeps(thumbs);
+    deps.listMounts = async () => [];
+    deps.hash = async () => ({ hash: 'partial-stranger', kind: 'test' });
+    deps.probe = async () => ({
+      durationMs: 1000,
+      width: 320,
+      height: 240,
+      videoCodec: 'h264',
+      metadataCreatedAt: null,
+      error: null,
+    });
+    deps.writeThumbnail = async () => false;
+
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    db.prepare(
+      `INSERT INTO libraries (id, path, volume_id, label, availability, created_at, updated_at)
+       VALUES ('lib', ?, 'uuid:catalog-disk', 'dance', 'online', 't', 't')`,
+    ).run(root);
+    db.prepare(`INSERT INTO videos (id, created_at, updated_at) VALUES ('video', 't', 't')`).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, size_bytes, file_id,
+         presence, created_at, updated_at
+       ) VALUES (
+         'loc', 'video', 'lib', ?, ?, 'gone.mp4', 12, '1', 'present', 't', 't'
+       )`,
+    ).run(missing, pathKey(missing));
+
+    const summary = await scanLibrary(db, 'lib', deps, { thumbsDir: thumbs });
+    expect(summary.offline).toBe(1);
+    expect(summary.discovered).toBe(0);
+    expect(db.prepare(`SELECT id FROM videos`).all()).toEqual([{ id: 'video' }]);
+    expect(db.prepare(`SELECT presence FROM video_locations`).get()).toEqual({
+      presence: 'present',
     });
   });
 });

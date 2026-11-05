@@ -80,6 +80,8 @@ function fakeDeps(input: {
       }
     },
     stat: async (filePath) => {
+      const listed = await deps.listMounts();
+      const named = listed.length > 0;
       if (input.directories.includes(filePath)) {
         return {
           size: 0,
@@ -87,7 +89,7 @@ function fakeDeps(input: {
           mtime: new Date('2024-06-01T00:00:00.000Z'),
           birthtime: null,
           fileId: null,
-          volumeId: input.files[0]?.volumeId ?? input.mounts[0]?.volumeId ?? null,
+          volumeId: named ? (input.files[0]?.volumeId ?? input.mounts[0]?.volumeId ?? null) : null,
           fileIdStable: true,
         };
       }
@@ -103,7 +105,7 @@ function fakeDeps(input: {
         mtime: file.mtime ?? new Date('2024-06-01T15:04:05.000Z'),
         birthtime: file.birthtime ?? null,
         fileId: file.fileId,
-        volumeId: file.volumeId,
+        volumeId: named ? file.volumeId : null,
       };
       return stat;
     },
