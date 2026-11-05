@@ -33,13 +33,7 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
       }
     },
     readDirectory: directoryReadable,
-    directoryHasEntries(dir) {
-      try {
-        return fs.readdirSync(dir).length > 0;
-      } catch {
-        return false;
-      }
-    },
+    directoryHasEntries: directoryHasEntries,
     walkVideos,
     walkLibrary,
     stat: async (filePath) => statIndexedFile(filePath, mounts ?? (mounts = await listMounts())),
@@ -56,6 +50,35 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
     },
     now: () => new Date().toISOString(),
   };
+}
+
+const ROOT_LITTER = new Set([
+  '.ds_store',
+  '.trashes',
+  '.spotlight-v100',
+  'system volume information',
+  'lost+found',
+]);
+
+export function isRootLitter(name: string): boolean {
+  if (name.startsWith('.')) return true;
+  return ROOT_LITTER.has(name.toLowerCase());
+}
+
+/** Reads one real entry. System junk does not count. Null means the folder could not be read. */
+export async function directoryHasEntries(dir: string): Promise<boolean | null> {
+  let handle: fs.Dir | undefined;
+  try {
+    handle = await fs.promises.opendir(dir);
+    for await (const entry of handle) {
+      if (!isRootLitter(entry.name)) return true;
+    }
+    return false;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 export async function statIndexedFile(

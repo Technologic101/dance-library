@@ -23,6 +23,15 @@ type FakeFile = {
   fileIdStable?: boolean;
 };
 
+function hasEntries(dir: string, files: { path: string }[], directories: string[]): boolean {
+  const slash = dir.includes('\\') ? '\\' : '/';
+  const prefix = dir.endsWith('\\') || dir.endsWith('/') ? dir : `${dir}${slash}`;
+  return (
+    files.some((file) => file.path.startsWith(prefix)) ||
+    directories.some((child) => child.startsWith(prefix))
+  );
+}
+
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dance-library-review-'));
   directories.push(dir);
@@ -46,13 +55,7 @@ function largeDeps(input: { files: FakeFile[]; directories: string[]; failHash?:
     isDirectory: (filePath) => input.directories.includes(filePath),
     exists: (filePath) => input.directories.includes(filePath) || fileMap.has(filePath),
     readDirectory: async () => true,
-    directoryHasEntries(dir) {
-      const prefix = dir.endsWith('\\') ? dir : `${dir}\\`;
-      return (
-        input.files.some((file) => file.path.startsWith(prefix)) ||
-        input.directories.some((child) => child.startsWith(prefix))
-      );
-    },
+    directoryHasEntries: async (dir) => hasEntries(dir, input.files, input.directories),
     walkVideos: async function* (root) {
       const prefix = root.endsWith('\\') ? root : `${root}\\`;
       for (const file of input.files) {
@@ -60,6 +63,17 @@ function largeDeps(input: { files: FakeFile[]; directories: string[]; failHash?:
       }
     },
     stat: async (filePath) => {
+      if (input.directories.includes(filePath)) {
+        return {
+          size: 0,
+          mtimeNs: '0',
+          mtime: new Date('2024-06-01T00:00:00.000Z'),
+          birthtime: null,
+          fileId: null,
+          volumeId: volume,
+          fileIdStable: true,
+        };
+      }
       const file = fileMap.get(filePath);
       if (!file) {
         const error = new Error('missing') as NodeJS.ErrnoException;
@@ -647,12 +661,193 @@ describe('review regressions', () => {
     const first = largeDeps({ directories: roots, files: [archived] });
     await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
     const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+    const locationId = (db.prepare(`SELECT id FROM video_locations`).get() as { id: string }).id;
     const second = largeDeps({ directories: roots, files: [linked, archived] });
     second.thumbs.add(`${id}.jpg`);
-    await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
-    const locations = db.prepare(`SELECT path FROM video_locations ORDER BY path`).all() as {
-      path: string;
-    }[];
-    expect(locations.map((row) => row.path).sort()).toEqual([archived.path, linked.path].sort());
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+    expect(summary).toMatchObject({ updated: 0, linked: 1, unchanged: 1, missing: 0 });
+    expect(db.prepare(`SELECT path FROM video_locations WHERE id = ?`).get(locationId)).toEqual({
+      path: archived.path,
+    });
+  });
+
+  it('still rewrites a rename that differs only by case', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const renamed: FakeFile = { ...original, path: 'D:\\dance\\Lesson.mp4' };
+    const scan = largeDeps({ directories: ['D:\\dance'], files: [renamed] });
+    const fold = (filePath: string) => filePath.replaceAll('\\', '/').toLowerCase();
+    scan.deps.exists = (filePath) =>
+      scan.deps.isDirectory(filePath) ||
+      [renamed.path].some((candidate) => fold(candidate) === fold(filePath));
+    scan.deps.stat = async (filePath) => {
+      if (scan.deps.isDirectory(filePath)) {
+        return {
+          size: 0,
+          mtimeNs: '0',
+          mtime: new Date('2024-06-01T00:00:00.000Z'),
+          birthtime: null,
+          fileId: null,
+          volumeId: volume,
+          fileIdStable: true,
+        };
+      }
+      if (fold(filePath) !== fold(renamed.path)) {
+        const error = new Error('missing') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      }
+      return {
+        size: renamed.size,
+        mtimeNs: renamed.mtimeNs,
+        mtime: new Date('2024-06-01T00:00:00.000Z'),
+        birthtime: null,
+        fileId: renamed.fileId,
+        volumeId: renamed.volumeId,
+        fileIdStable: true,
+      };
+    };
+    db.prepare(
+      `INSERT INTO videos (
+         id, content_hash, full_hash, size_bytes, duration_ms, width, height, video_codec,
+         thumbnail_file, created_at, updated_at
+       ) VALUES (
+         'video', 'partial-same', 'full-same', 8000000, 1000, 320, 240, 'h264',
+         'video.jpg', 't', 't'
+       )`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, path_key, filename, volume_id, file_id, size_bytes, mtime_ns,
+         presence, created_at, updated_at
+       ) VALUES (
+         'loc', 'video', 'lib', 'D:\\dance\\lesson.mp4', 'D:/dance/lesson.mp4', 'lesson.mp4',
+         ?, '1', 8000000, '10', 'present', 't', 't'
+       )`,
+    ).run(volume);
+    scan.thumbs.add('video.jpg');
+    await scanLibrary(db, 'lib', scan.deps, { thumbsDir: tempDir() });
+    expect(db.prepare(`SELECT id, path FROM video_locations`).all()).toEqual([
+      { id: 'loc', path: 'D:\\dance\\Lesson.mp4' },
+    ]);
+  });
+
+  it('stays offline when every location is already missing and the saved disk is gone', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    db.prepare(
+      `INSERT INTO libraries (
+         id, path, volume_id, volume_rel_path, label, availability, created_at, updated_at
+       ) VALUES ('lib', 'D:\\dance', ?, 'dance', 'dance', 'offline', 't', 't')`,
+    ).run(volume);
+    db.prepare(`INSERT INTO videos (id, created_at, updated_at) VALUES ('video', 't', 't')`).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, filename, presence, created_at, updated_at
+       ) VALUES ('loc', 'video', 'lib', 'D:\\dance\\gone.mp4', 'gone.mp4', 'missing', 't', 't')`,
+    ).run();
+    const stranger: FakeFile = { ...original, path: 'D:\\dance\\other.mp4', fileId: '99' };
+    const scan = largeDeps({ directories: ['D:\\dance'], files: [stranger] });
+    scan.deps.listMounts = async () => [{ volumeId: 'vol:other', root: 'D:\\' }];
+    scan.deps.stat = async (filePath) => {
+      if (filePath === 'D:\\dance') {
+        return {
+          size: 0,
+          mtimeNs: '0',
+          mtime: new Date('2024-06-01T00:00:00.000Z'),
+          birthtime: null,
+          fileId: null,
+          volumeId: 'vol:other',
+          fileIdStable: true,
+        };
+      }
+      return {
+        size: stranger.size,
+        mtimeNs: stranger.mtimeNs,
+        mtime: new Date('2024-06-01T00:00:00.000Z'),
+        birthtime: null,
+        fileId: stranger.fileId,
+        volumeId: 'vol:other',
+        fileIdStable: true,
+      };
+    };
+    const summary = await scanLibrary(db, 'lib', scan.deps, { thumbsDir: tempDir() });
+    expect(summary.offline).toBe(1);
+    expect(summary.discovered).toBe(0);
+    expect(db.prepare(`SELECT id FROM videos`).all()).toEqual([{ id: 'video' }]);
+  });
+
+  it('does not mark the library missing when an empty listing sees a different disk', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const first = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const stranger: FakeFile = {
+      ...original,
+      path: 'D:\\dance\\other.mp4',
+      fileId: '99',
+      hash: 'partial-other',
+      fullHash: 'full-other',
+    };
+    const second = largeDeps({ directories: ['D:\\dance'], files: [stranger] });
+    second.deps.listMounts = async () => [];
+    second.deps.stat = async (filePath) => {
+      if (filePath === 'D:\\dance') {
+        return {
+          size: 0,
+          mtimeNs: '0',
+          mtime: new Date('2024-06-01T00:00:00.000Z'),
+          birthtime: null,
+          fileId: null,
+          volumeId: 'vol:other',
+          fileIdStable: true,
+        };
+      }
+      return {
+        size: stranger.size,
+        mtimeNs: stranger.mtimeNs,
+        mtime: new Date('2024-06-01T00:00:00.000Z'),
+        birthtime: null,
+        fileId: stranger.fileId,
+        volumeId: 'vol:other',
+        fileIdStable: true,
+      };
+    };
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+    expect(summary.offline).toBe(1);
+    expect(summary.missing).toBe(0);
+    expect(db.prepare(`SELECT presence FROM video_locations`).get()).toEqual({
+      presence: 'present',
+    });
+  });
+
+  it('does not mark almost every file missing when the mount listing is empty', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const first = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const stranger: FakeFile = {
+      ...original,
+      path: 'D:\\dance\\other.mp4',
+      fileId: '99',
+      hash: 'partial-other',
+      fullHash: 'full-other',
+    };
+    const second = largeDeps({ directories: ['D:\\dance'], files: [stranger] });
+    second.deps.listMounts = async () => [];
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+    expect(summary.missing).toBe(0);
+    expect(summary.errors).toBe(1);
+    expect(
+      db.prepare(`SELECT presence FROM video_locations WHERE path = ?`).get(original.path),
+    ).toEqual({
+      presence: 'present',
+    });
+    expect(db.prepare(`SELECT last_error AS lastError FROM libraries`).get()).toMatchObject({
+      lastError: expect.stringMatching(/not marked missing/i),
+    });
   });
 });

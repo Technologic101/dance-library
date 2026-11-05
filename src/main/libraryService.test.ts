@@ -34,11 +34,11 @@ function idleDeps(): ScanDeps {
     },
     exists: (filePath) => fs.existsSync(filePath),
     readDirectory: async () => true,
-    directoryHasEntries(dir) {
+    directoryHasEntries: async (dir) => {
       try {
-        return fs.readdirSync(dir).length > 0;
+        return fs.readdirSync(dir).some((name) => !name.startsWith('.'));
       } catch {
-        return false;
+        return null;
       }
     },
     walkVideos: async function* () {},
