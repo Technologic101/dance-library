@@ -1,5 +1,13 @@
 import type { CatalogFacets, Level, VideoQuery, VideoSort, VideoType } from './api';
 import { levels, videoSorts, videoTypes } from './api';
+import { localDayBounds } from './localDayBounds.mjs';
+
+/**
+ * Local calendar days as UTC instants. `toExclusive` is the next local midnight,
+ * so the selected end day is included. Each date uses the local constructor,
+ * which applies that date's own DST offset.
+ */
+export { localDayBounds };
 
 export const videoTypeLabels: Record<VideoType, string> = {
   lesson: 'Lesson',
@@ -170,32 +178,12 @@ export function parseVideoQuery(value: unknown): VideoQuery {
   return query;
 }
 
-/**
- * Local calendar days as UTC instants. `toExclusive` is the next local midnight,
- * so the selected end day is included. Each date uses the local constructor,
- * which applies that date's own DST offset.
- */
-export function localDayBounds(
-  fromDay?: string,
-  toDay?: string,
-): { from?: string; toExclusive?: string } {
-  return {
-    from: fromDay ? instantAtLocalMidnight(fromDay, 0) : undefined,
-    toExclusive: toDay ? instantAtLocalMidnight(toDay, 1) : undefined,
-  };
-}
-
 /** When a result page is empty but earlier pages still have rows, move back. */
 export function pageAfterShrink(page: number, total: number, pageSize: number): number | null {
   if (page <= 0 || total <= 0 || pageSize <= 0) return null;
   const last = Math.ceil(total / pageSize) - 1;
   if (page > last) return last;
   return null;
-}
-
-function instantAtLocalMidnight(day: string, addDays: number): string {
-  const [year, month, date] = day.split('-').map(Number);
-  return new Date(year ?? 0, (month ?? 1) - 1, (date ?? 1) + addDays).toISOString();
 }
 
 function record(value: unknown): Record<string, unknown> {
