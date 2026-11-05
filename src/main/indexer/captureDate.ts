@@ -67,18 +67,22 @@ export function captureDateFromFilename(filename: string): string | null {
   return null;
 }
 
-/** Interprets a zone-less wall clock as local time and stores a UTC instant. */
+/**
+ * A filename time is a local wall clock and is stored as a UTC instant.
+ * A filename with only a date stays a date, so the card does not show midnight.
+ */
 export function wallClockToUtc(value: string): string {
   if (value.endsWith('Z')) return value;
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2}))?/.exec(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2}))?$/.exec(value.trim());
   if (!match) return value;
+  if (match[4] == null) return `${match[1]}-${match[2]}-${match[3]}`;
   const date = new Date(
     Number(match[1]),
     Number(match[2]) - 1,
     Number(match[3]),
-    Number(match[4] ?? 0),
-    Number(match[5] ?? 0),
-    Number(match[6] ?? 0),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6]),
   );
   if (!Number.isFinite(date.getTime())) return value;
   return date.toISOString();

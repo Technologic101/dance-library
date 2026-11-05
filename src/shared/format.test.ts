@@ -39,6 +39,7 @@ describe('formatCapturedAt', () => {
       `${instant.getFullYear()}-${pad(instant.getMonth() + 1)}-${pad(instant.getDate())} ${pad(instant.getHours())}:${pad(instant.getMinutes())}:${pad(instant.getSeconds())}`,
     );
     expect(formatCapturedAt('2024-03-15')).toBe('2024-03-15');
+    expect(formatCapturedAt('2024-03-15')).not.toMatch(/00:00:00/);
     expect(formatCapturedAt(null)).toBe('—');
   });
 });

@@ -350,30 +350,54 @@ describe('catalog search', () => {
     expect(elapsed).toBeLessThan(250);
   });
 
-  it('keeps a near-midnight UTC instant on the local day, with an exclusive end', () => {
+  it('keeps a near-midnight local instant on that local day', () => {
     const db = open();
     addLibrary(db, 'lib', 'dance');
-    const bounds = localDayBounds('2024-06-30', '2024-06-30', 420);
+    const bounds = localDayBounds('2024-06-30', '2024-06-30');
+    const next = localDayBounds('2024-07-01', '2024-07-01');
     addVideo(db, {
       id: 'night',
       title: 'Late social',
-      capturedAt: '2024-07-01T05:00:00.000Z',
+      capturedAt: new Date(2024, 5, 30, 23, 30, 0).toISOString(),
       libraryId: 'lib',
       filename: 'late.mp4',
     });
     addVideo(db, {
+      id: 'dated',
+      title: 'Date only',
+      capturedAt: '2024-06-30',
+      libraryId: 'lib',
+      filename: 'dated.mp4',
+    });
+    addVideo(db, {
       id: 'next',
       title: 'After midnight',
-      capturedAt: '2024-07-01T08:00:00.000Z',
+      capturedAt: new Date(2024, 6, 1, 0, 30, 0).toISOString(),
       libraryId: 'lib',
       filename: 'next.mp4',
     });
     const repo = createRepository(db);
     expect(
       repo
-        .listVideoSummaries({ capturedFrom: bounds.from, capturedTo: bounds.toExclusive })
+        .listVideoSummaries({
+          capturedFrom: bounds.from,
+          capturedTo: bounds.toExclusive,
+          capturedFromDay: '2024-06-30',
+          capturedToDay: '2024-06-30',
+        })
+        .map((item) => item.id)
+        .sort(),
+    ).toEqual(['dated', 'night']);
+    expect(
+      repo
+        .listVideoSummaries({
+          capturedFrom: next.from,
+          capturedTo: next.toExclusive,
+          capturedFromDay: '2024-07-01',
+          capturedToDay: '2024-07-01',
+        })
         .map((item) => item.id),
-    ).toEqual(['night']);
+    ).toEqual(['next']);
   });
 
   it('treats duration preset edges as exclusive', () => {
@@ -488,12 +512,28 @@ describe('catalog search', () => {
     ).toEqual(['vid']);
   });
 
-  it('indexes 20,000 locations by rowid quickly enough to scan', () => {
+  it('updates the search index by rowid, not by scanning it', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    addVideo(db, { id: 'v0', title: 'Clip', libraryId: 'lib', filename: 'clip.mp4' });
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN UPDATE videos_fts SET title = 'x'
+         WHERE rowid = (SELECT rowid FROM video_search_keys WHERE video_id = 'v0')`,
+      )
+      .all() as { detail: string }[];
+    const planText = plan.map((row) => row.detail).join('\n');
+    expect(planText).toMatch(/SEARCH video_search_keys/);
+    expect(planText).toMatch(/videos_fts VIRTUAL TABLE INDEX 0:=/);
+    expect(planText).not.toMatch(/SCAN videos_fts VIRTUAL TABLE(?! INDEX)/);
+  });
+
+  it('sorts an unfiltered page of 30,000 titled videos without decorating every row slowly', () => {
     const db = open();
     addLibrary(db, 'lib', 'dance');
     db.prepare(`INSERT INTO tags (id, name, created_at) VALUES ('tag-move', 'move', 't')`).run();
     const insertVideo = db.prepare(
-      `INSERT INTO videos (id, title, created_at, updated_at) VALUES (?, 'Clip', 't', 't')`,
+      `INSERT INTO videos (id, title, created_at, updated_at) VALUES (?, ?, 't', 't')`,
     );
     const insertLocation = db.prepare(
       `INSERT INTO video_locations (
@@ -503,36 +543,58 @@ describe('catalog search', () => {
     const insertTag = db.prepare(
       `INSERT INTO video_tags (video_id, tag_id) VALUES (?, 'tag-move')`,
     );
-    const seedVideos = db.transaction(() => {
-      for (let index = 0; index < 20_000; index += 1) insertVideo.run(`v${index}`);
-    });
-    seedVideos();
-    const started = performance.now();
-    const seedCopies = db.transaction(() => {
-      for (let index = 0; index < 20_000; index += 1) {
-        const filename = `clip-${index}.mp4`;
-        insertLocation.run(
-          `loc${index}`,
-          `v${index}`,
-          `/dance/lib/${filename}`,
-          filename,
-          filename,
-        );
-        insertTag.run(`v${index}`);
+    const seed = db.transaction(() => {
+      for (let index = 0; index < 30_000; index += 1) {
+        const id = `v${String(index).padStart(5, '0')}`;
+        const filename = `clip-${id}.mp4`;
+        insertVideo.run(id, `Title ${id}`);
+        insertLocation.run(`loc${index}`, id, `/dance/lib/${filename}`, filename, filename);
+        insertTag.run(id);
       }
     });
-    seedCopies();
-    expect(performance.now() - started).toBeLessThan(20_000);
+    seed();
     const repo = createRepository(db);
-    const queried = performance.now();
-    const page = repo.listVideoSummaries({
-      text: 'clip-3',
-      tagIds: ['tag-move'],
-      limit: 48,
-    });
-    expect(performance.now() - queried).toBeLessThan(1_000);
-    expect(page.length).toBeGreaterThan(0);
-    expect(page.length).toBeLessThanOrEqual(48);
-    expect(repo.countVideoSummaries({ text: 'Clip', tagIds: ['tag-move'] })).toBe(20_000);
+    const started = performance.now();
+    const page = repo.listVideoSummaries({ sort: 'title', limit: 48, offset: 0 });
+    expect(performance.now() - started).toBeLessThan(8_000);
+    expect(page).toHaveLength(48);
+    expect(page[0]?.displayTitle).toBe('Title v00000');
+    expect(repo.countVideoSummaries({ sort: 'title' })).toBe(30_000);
   }, 60_000);
+
+  it('rebuilds a catalog that still has the first search table and no key map', () => {
+    const db = open();
+    addLibrary(db, 'lib', 'dance');
+    db.exec(`
+      DROP TRIGGER IF EXISTS videos_fts_insert;
+      DROP TRIGGER IF EXISTS videos_fts_update;
+      DROP TRIGGER IF EXISTS videos_fts_delete;
+      DROP TRIGGER IF EXISTS video_tags_fts_insert;
+      DROP TRIGGER IF EXISTS video_tags_fts_delete;
+      DROP TRIGGER IF EXISTS video_tags_fts_update;
+      DROP TRIGGER IF EXISTS tags_fts_rename;
+      DROP TRIGGER IF EXISTS video_locations_fts_insert;
+      DROP TRIGGER IF EXISTS video_locations_fts_delete;
+      DROP TRIGGER IF EXISTS video_locations_fts_update;
+      DROP TABLE videos_fts;
+      DROP TABLE video_search_keys;
+      CREATE VIRTUAL TABLE videos_fts USING fts5(
+        video_id UNINDEXED, title, notes, tags, filenames
+      );
+    `);
+    db.prepare(
+      `INSERT INTO videos (id, title, created_at, updated_at) VALUES ('vid', 'Kizomba class', 't', 't')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_locations (
+         id, video_id, library_id, path, filename, presence, created_at, updated_at
+       ) VALUES ('loc', 'vid', 'lib', '/dance/lib/copy.mp4', 'copy.mp4', 'present', 't', 't')`,
+    ).run();
+    repairSearchIndex(db);
+    expect(
+      createRepository(db)
+        .listVideoSummaries({ text: 'copy' })
+        .map((item) => item.id),
+    ).toEqual(['vid']);
+  });
 });

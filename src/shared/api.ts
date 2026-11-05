@@ -115,6 +115,9 @@ export type VideoQuery = {
   capturedFrom?: string;
   /** Exclusive UTC instant for the end of a local day. */
   capturedTo?: string;
+  /** Local calendar day, used for date-only capture values that have no time. */
+  capturedFromDay?: string;
+  capturedToDay?: string;
   videoTypes?: VideoType[];
   styleIds?: string[];
   instructorIds?: string[];

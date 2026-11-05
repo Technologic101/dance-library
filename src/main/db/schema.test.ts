@@ -192,6 +192,7 @@ describe('catalog schema', () => {
     expect(migrate(db)).toEqual(['005_search']);
     const repo = createRepository(db);
     expect(repo.listVideoSummaries({ text: 'kizomba' }).map((item) => item.id)).toEqual(['vid']);
+    expect(repo.listVideoSummaries({ text: 'copy' }).map((item) => item.id)).toEqual(['vid']);
     expect(repo.listVideoSummaries({ text: 'notes' }).map((item) => item.id)).toEqual(['vid']);
     expect(repo.listVideoSummaries({ text: 'wave' }).map((item) => item.id)).toEqual(['vid']);
     const captured = db.prepare(`SELECT captured_at AS capturedAt FROM videos`).get() as {

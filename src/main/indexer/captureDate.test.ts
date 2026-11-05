@@ -59,6 +59,14 @@ describe('chooseCaptureDate', () => {
         fileModifiedAt: modified,
       }),
     ).toEqual({ capturedAt: wallClockToUtc('2024-03-15T14:22:33'), source: 'filename' });
+    expect(
+      chooseCaptureDate({
+        metadataCreatedAt: null,
+        filename: 'workshop-2024-03-15.mp4',
+        fileCreatedAt: null,
+        fileModifiedAt: null,
+      }),
+    ).toEqual({ capturedAt: '2024-03-15', source: 'filename' });
 
     expect(
       chooseCaptureDate({
