@@ -3,6 +3,7 @@ import { migration001 } from './migrations/001_init';
 import { migration002 } from './migrations/002_catalog';
 import { migration003 } from './migrations/003_content_identity';
 import { migration004 } from './migrations/004_path_key';
+import { migration005 } from './migrations/005_search';
 
 export type Migration = {
   id: number;
@@ -10,7 +11,13 @@ export type Migration = {
   up: (db: Database.Database) => void;
 };
 
-export const migrations: Migration[] = [migration001, migration002, migration003, migration004];
+export const migrations: Migration[] = [
+  migration001,
+  migration002,
+  migration003,
+  migration004,
+  migration005,
+];
 
 export function applyMigrations(db: Database.Database, pending: readonly Migration[]): string[] {
   const ordered = validateMigrations(pending);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { DatabaseHealth } from '../../shared/api';
 import { migrate } from './migrate';
+import { repairSearchIndex } from './searchIndex';
 
 export const CATALOG_FILENAME = 'catalog.sqlite';
 export const CATALOG_POLICY_KEY = 'catalog_policy';
@@ -19,6 +20,7 @@ export function openCatalog(dbPath: string): Database.Database {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   migrate(db);
+  repairSearchIndex(db);
   return db;
 }
 

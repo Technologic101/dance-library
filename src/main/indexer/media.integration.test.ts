@@ -103,7 +103,7 @@ describe('real sample videos', () => {
     expect(added.added).toHaveLength(1);
     expect(added.scan).toMatchObject({ discovered: 3, added: 3, errors: 0 });
 
-    const videos = service.listVideos();
+    const videos = service.listVideos().items;
     const byName = new Map(
       videos.flatMap((video) => video.locations.map((location) => [location.filename, video])),
     );
@@ -120,7 +120,7 @@ describe('real sample videos', () => {
     );
     expect(byName.get('demo-hevc.mp4')?.videoCodec).toBe('hevc');
     expect(byName.get('social_20240315_193045.mp4')).toMatchObject({
-      capturedAt: '2024-03-15T19:30:45',
+      capturedAt: new Date(2024, 2, 15, 19, 30, 45).toISOString(),
       capturedAtSource: 'filename',
     });
     for (const video of videos) {
@@ -142,7 +142,7 @@ describe('real sample videos', () => {
     const rescanned = await service.scanAll();
     expect(rescanned.added).toBe(0);
     expect(rescanned.missing).toBe(1);
-    const afterVideos = service.listVideos();
+    const afterVideos = service.listVideos().items;
     const warmup = afterVideos.find((video) => video.id === lesson.id);
     const missing = afterVideos.find((video) =>
       video.locations.some((location) => location.filename === 'demo-hevc.mp4'),

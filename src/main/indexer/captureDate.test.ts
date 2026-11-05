@@ -4,6 +4,7 @@ import {
   chooseCaptureDate,
   fileTimeIso,
   parseMediaTimestamp,
+  wallClockToUtc,
 } from './captureDate';
 
 describe('parseMediaTimestamp', () => {
@@ -57,7 +58,7 @@ describe('chooseCaptureDate', () => {
         fileCreatedAt: null,
         fileModifiedAt: modified,
       }),
-    ).toEqual({ capturedAt: '2024-03-15T14:22:33', source: 'filename' });
+    ).toEqual({ capturedAt: wallClockToUtc('2024-03-15T14:22:33'), source: 'filename' });
 
     expect(
       chooseCaptureDate({
