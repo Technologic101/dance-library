@@ -80,6 +80,7 @@ export type VideoCounts = {
 
 export type VideoChangeResult = {
   changed: number;
+  requested: number;
 };
 
 export type ScanProgress = {

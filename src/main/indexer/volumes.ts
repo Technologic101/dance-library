@@ -10,6 +10,7 @@ export type Mount = {
   volumeId: string;
   /** Mount point. On Windows this is a drive root such as `D:\`. */
   root: string;
+  fsType?: string;
 };
 
 export type VolumeLocation = {
@@ -17,6 +18,7 @@ export type VolumeLocation = {
   root: string;
   /** Path relative to the mount point, using forward slashes. */
   relPath: string;
+  fsType?: string;
 };
 
 export type ResolvedLibrary = {
@@ -60,6 +62,19 @@ type MountInfo = {
  * Finds a library folder after its drive letter or mount point changes.
  * The saved volume id wins over a different disk that now occupies the old path.
  */
+/** `dev:` ids change when a disk is remounted, so they are not a library identity. */
+export function isStableVolumeId(volumeId: string | null | undefined): volumeId is string {
+  return typeof volumeId === 'string' && volumeId.length > 0 && !volumeId.startsWith('dev:');
+}
+
+const UNSTABLE_FILE_ID = /^(fat|fat32|vfat|msdos|exfat|cifs|nfs|nfs4|smbfs|fuse|9p)$/i;
+
+/** FAT, exFAT, and network mounts reuse or reshuffle file ids. */
+export function fileIdIsStable(fsType: string | null | undefined): boolean {
+  if (!fsType) return true;
+  return !UNSTABLE_FILE_ID.test(fsType);
+}
+
 export function resolveLibraryPath(
   library: { path: string; volumeId: string | null; volumeRelPath: string | null },
   mounts: readonly Mount[],
@@ -70,17 +85,37 @@ export function resolveLibraryPath(
 ): ResolvedLibrary {
   const savedExists = io.existsDir(library.path);
   const described = savedExists ? io.describe(library.path) : null;
+  const savedId = isStableVolumeId(library.volumeId) ? library.volumeId : null;
+  const describedId = isStableVolumeId(described?.volumeId) ? described.volumeId : null;
 
-  if (savedExists && !library.volumeId) {
+  if (savedExists && !described) {
     return {
       availability: 'online',
       path: library.path,
-      volumeId: described?.volumeId ?? null,
+      volumeId: savedId,
+      volumeRelPath: library.volumeRelPath,
+    };
+  }
+
+  if (savedExists && described && !describedId) {
+    return {
+      availability: 'online',
+      path: library.path,
+      volumeId: savedId,
+      volumeRelPath: described.relPath,
+    };
+  }
+
+  if (savedExists && !savedId) {
+    return {
+      availability: 'online',
+      path: library.path,
+      volumeId: describedId,
       volumeRelPath: described?.relPath ?? null,
     };
   }
 
-  if (described && library.volumeId && described.volumeId === library.volumeId) {
+  if (described && savedId && describedId === savedId) {
     return {
       availability: 'online',
       path: library.path,
@@ -89,9 +124,9 @@ export function resolveLibraryPath(
     };
   }
 
-  if (library.volumeId && library.volumeRelPath != null) {
+  if (savedId && library.volumeRelPath != null) {
     const relocated = locateRelPath(
-      library.volumeId,
+      savedId,
       library.volumeRelPath,
       mounts,
       io.existsDir,
@@ -101,7 +136,7 @@ export function resolveLibraryPath(
       return {
         availability: 'online',
         path: relocated,
-        volumeId: library.volumeId,
+        volumeId: savedId,
         volumeRelPath: library.volumeRelPath,
       };
     }
@@ -110,7 +145,7 @@ export function resolveLibraryPath(
   return {
     availability: 'offline',
     path: library.path,
-    volumeId: library.volumeId,
+    volumeId: savedId,
     volumeRelPath: library.volumeRelPath,
   };
 }
@@ -222,7 +257,12 @@ export function describeWindowsPath(
   const mount = mounts.find((item) => item.root.toLowerCase() === parsed.root.toLowerCase());
   if (!mount) return null;
   const rel = path.win32.relative(parsed.root, filePath).split('\\').join('/');
-  return { volumeId: mount.volumeId, root: mount.root, relPath: rel === '' ? '' : rel };
+  return {
+    volumeId: mount.volumeId,
+    root: mount.root,
+    relPath: rel === '' ? '' : rel,
+    fsType: mount.fsType,
+  };
 }
 
 export function describePosixPath(
@@ -237,7 +277,7 @@ export function describePosixPath(
   if (!best) return null;
   let rel = filePath.slice(best.root.length);
   if (rel.startsWith('/')) rel = rel.slice(1);
-  return { volumeId: best.volumeId, root: best.root, relPath: rel };
+  return { volumeId: best.volumeId, root: best.root, relPath: rel, fsType: best.fsType };
 }
 
 export function describePath(filePath: string, mounts: readonly Mount[]): VolumeLocation | null {
@@ -296,6 +336,7 @@ function listLinuxMounts(): Mount[] {
     mounts.push({
       volumeId: uuid ? `uuid:${uuid}` : `dev:${info.majorMinor}`,
       root: info.mountPoint,
+      fsType: info.fsType,
     });
   }
   return mounts;

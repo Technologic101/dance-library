@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { ScanProgress, ScanSummary } from '../../shared/api';
@@ -13,7 +14,8 @@ import {
   type VideoRecord,
 } from './repository';
 import { thumbnailFileName } from './thumbnails';
-import { resolveLibraryPath, type Mount, type VolumeLocation } from './volumes';
+import { isStableVolumeId, resolveLibraryPath, type Mount, type VolumeLocation } from './volumes';
+import { parentDir } from './paths';
 
 export type IndexedStat = {
   size: number;
@@ -22,6 +24,8 @@ export type IndexedStat = {
   birthtime: Date | null;
   fileId: string | null;
   volumeId: string | null;
+  /** False on FAT, exFAT, and network filesystems, where inode numbers are reused. */
+  fileIdStable?: boolean;
 };
 
 export type ProbeFields = {
@@ -40,6 +44,12 @@ export type ScanDeps = {
   exists: (filePath: string) => boolean;
   readDirectory: (dir: string) => Promise<boolean>;
   walkVideos: (root: string) => AsyncIterable<string>;
+  /** When set, unreadable directories are not treated as missing files. */
+  walkLibrary?: (root: string) => Promise<{
+    files: string[];
+    listed: string[];
+    unreadable: string[];
+  }>;
   stat: (filePath: string) => Promise<IndexedStat>;
   hash: (filePath: string) => Promise<{ hash: string; kind: string }>;
   /** True when the partial hash already covers every byte, so it can confirm a duplicate. */
@@ -122,10 +132,32 @@ export async function scanLibrary(
   }
 
   const mounts = await deps.listMounts();
-  const resolved = resolveLibraryPath(library, mounts, {
+  let resolved = resolveLibraryPath(library, mounts, {
     existsDir: (candidate) => deps.isDirectory(candidate),
     describe: (candidate) => deps.describePath(candidate, mounts),
   });
+  if (resolved.availability === 'offline' && deps.isDirectory(library.path)) {
+    const sample = repo.locationsForLibrary(library.id).slice(0, 5);
+    let matchedSample = 0;
+    for (const location of sample) {
+      if (!deps.exists(location.path)) continue;
+      try {
+        const stat = await deps.stat(location.path);
+        if (location.sizeBytes == null || stat.size === location.sizeBytes) matchedSample += 1;
+      } catch {
+        // A path that cannot be stated is not evidence this is the same disk.
+      }
+    }
+    const filesStillThere = sample.length === 0 || matchedSample > 0;
+    if (mounts.length === 0 || filesStillThere) {
+      resolved = {
+        availability: 'online',
+        path: library.path,
+        volumeId: isStableVolumeId(library.volumeId) ? library.volumeId : null,
+        volumeRelPath: library.volumeRelPath,
+      };
+    }
+  }
   const now = deps.now();
 
   if (resolved.availability === 'offline') {
@@ -160,17 +192,10 @@ export async function scanLibrary(
     return summary;
   }
 
-  const files: string[] = [];
-  for await (const file of deps.walkVideos(resolved.path)) {
-    files.push(file);
-    if (files.length % 50 === 0) {
-      emit(
-        options.onProgress,
-        running(library, files.length, 0, null, `Reading ${library.label}…`),
-      );
-      await yieldNow();
-    }
-  }
+  const walked = await collectWalk(deps, resolved.path, (count) => {
+    emit(options.onProgress, running(library, count, 0, null, `Reading ${library.label}…`));
+  });
+  const files = walked.files;
   summary.discovered = files.length;
 
   const seen = new Set<string>();
@@ -203,7 +228,15 @@ export async function scanLibrary(
     await yieldNow();
   }
 
-  summary.missing = repo.markMissing(library.id, generation, deps.now());
+  summary.missing = markUnseen(
+    repo,
+    deps,
+    options.thumbsDir,
+    library.id,
+    resolved.path,
+    walked,
+    seen,
+  );
   repo.finishScan(library.id, deps.now());
   emit(options.onProgress, {
     state: 'done',
@@ -235,11 +268,21 @@ async function indexFile(
   }
 
   const filename = fileNameOf(input.filePath);
-  const identity =
-    stat.volumeId && stat.fileId ? repo.findLocationsByIdentity(stat.volumeId, stat.fileId) : [];
-  let location = pickIdentityMatch(identity, input.filePath, (candidate) => deps.exists(candidate));
-  if (!location) location = repo.findLocationByPath(input.filePath);
+  let location = repo.findLocationByPath(input.filePath);
   if (location && input.seen.has(location.id)) location = null;
+  if (!location && stat.fileId && stat.volumeId && stat.fileIdStable !== false) {
+    location = identityLocation(repo, deps, stat, input.filePath, input.seen, null);
+  }
+
+  if (stat.size === 0) {
+    if (location) {
+      repo.updateLocation(
+        locationWrite(location.id, location.videoId, input, stat, filename, deps),
+      );
+      input.seen.add(location.id);
+    }
+    return null;
+  }
 
   const currentVideo = location ? repo.getVideo(location.videoId) : null;
   if (location && currentVideo && canSkipProbe(location, currentVideo, stat, deps)) {
@@ -259,20 +302,35 @@ async function indexFile(
     hashError = clipError(error instanceof Error ? error.message : String(error));
   }
 
-  const replaced = Boolean(
-    currentVideo &&
-    contentHash &&
-    currentVideo.contentHash &&
-    currentVideo.contentHash !== contentHash,
+  if (!location && contentHash && stat.fileId && stat.volumeId && stat.fileIdStable !== false) {
+    location = identityLocation(repo, deps, stat, input.filePath, input.seen, contentHash);
+  }
+
+  const boundVideo = location ? repo.getVideo(location.videoId) : currentVideo;
+  const hashChanged = Boolean(
+    contentHash && boundVideo?.contentHash && boundVideo.contentHash !== contentHash,
   );
-  let target = replaced ? null : currentVideo;
-  if (!target && contentHash) {
-    target = await confirmContentMatch(repo, deps, {
-      filePath: input.filePath,
-      hash: contentHash,
-      size: stat.size,
-      exceptVideoId: replaced ? currentVideo?.id : undefined,
-    });
+  const hashMissing = Boolean(contentHash && boundVideo && !boundVideo.contentHash);
+  const plan =
+    contentHash && (!boundVideo?.contentHash || hashChanged)
+      ? await planContentMatch(repo, deps, {
+          filePath: input.filePath,
+          hash: contentHash,
+          size: stat.size,
+          exceptVideoId: hashChanged ? boundVideo?.id : undefined,
+        })
+      : { keepId: null, mergeIds: [] as string[], fullHash: null as string | null };
+
+  let target = hashChanged ? null : boundVideo;
+  const mergeIds = [...plan.mergeIds];
+  if (plan.keepId && (!target || target.id !== plan.keepId)) {
+    if (target && target.id !== plan.keepId) mergeIds.push(target.id);
+    target = repo.getVideo(plan.keepId);
+  } else if (!plan.keepId && hashChanged) {
+    target = null;
+  }
+  if (hashMissing && plan.keepId && boundVideo && boundVideo.id !== plan.keepId) {
+    if (!mergeIds.includes(boundVideo.id)) mergeIds.push(boundVideo.id);
   }
 
   const probed = await probeFile(input.filePath, deps);
@@ -283,123 +341,186 @@ async function indexFile(
     fileModifiedAt: stat.mtime,
   });
   const now = deps.now();
-
-  if (target && location && location.videoId !== target.id) {
-    repo.updateLocation(locationWrite(location.id, target.id, input, stat, filename, deps));
-    input.seen.add(location.id);
-    return 'linked';
-  }
-
-  if (target && !location) {
-    const moved = claimGoneLocation(repo, deps, target.id, input.seen);
-    if (moved) {
-      repo.updateLocation(locationWrite(moved.id, target.id, input, stat, filename, deps));
-      input.seen.add(moved.id);
-      return 'updated';
-    }
-    const locationId = randomUUID();
-    repo.insertLocation(locationWrite(locationId, target.id, input, stat, filename, deps));
-    input.seen.add(locationId);
-    return 'linked';
-  }
-
-  const videoId = target?.id ?? randomUUID();
+  const thumbId = target?.id ?? randomUUID();
   const thumbnailFile = await writeVideoThumbnail(
     deps,
     thumbsDir,
-    videoId,
+    thumbId,
     input.filePath,
     probed.durationMs,
     target?.thumbnailFile ?? null,
   );
-  const videoWrite = {
-    id: videoId,
-    contentHash,
-    contentHashKind,
-    fullHash: target?.fullHash ?? null,
-    fullHashKind: target?.fullHash ? FULL_HASH_KIND : null,
-    sizeBytes: stat.size,
-    durationMs: probed.durationMs,
-    width: probed.width,
-    height: probed.height,
-    videoCodec: probed.videoCodec,
-    container: extensionOf(filename),
-    capturedAt: captured.capturedAt,
-    capturedAtSource: captured.source,
-    metadataCreatedAt: probed.metadataCreatedAt,
-    metadataError: hashError ?? probed.error,
-    thumbnailFile,
-    now,
-  };
-  if (target) repo.updateVideoTechnical(videoWrite);
-  else repo.insertVideo(videoWrite);
 
-  if (location) {
-    repo.updateLocation(locationWrite(location.id, videoId, input, stat, filename, deps));
-    input.seen.add(location.id);
-    return replaced ? 'added' : 'updated';
-  }
-  const locationId = randomUUID();
-  repo.insertLocation(locationWrite(locationId, videoId, input, stat, filename, deps));
-  input.seen.add(locationId);
-  return 'added';
+  let outcome: IndexOutcome = 'added';
+  repo.transaction(() => {
+    let videoId = target?.id ?? thumbId;
+    if (plan.fullHash) {
+      const owner = repo.findVideoByFullHash(plan.fullHash);
+      if (owner && owner.id !== videoId) {
+        if (repo.getVideo(videoId)) repo.mergeVideos(owner.id, [videoId, ...mergeIds], now);
+        else if (mergeIds.length > 0) repo.mergeVideos(owner.id, mergeIds, now);
+        videoId = owner.id;
+      } else if (mergeIds.length > 0 && repo.getVideo(videoId)) {
+        repo.mergeVideos(videoId, mergeIds, now);
+      }
+    } else if (mergeIds.length > 0 && repo.getVideo(videoId)) {
+      repo.mergeVideos(videoId, mergeIds, now);
+    }
+    const videoWrite = {
+      id: videoId,
+      contentHash,
+      contentHashKind,
+      fullHash: plan.fullHash,
+      fullHashKind: plan.fullHash ? FULL_HASH_KIND : null,
+      sizeBytes: stat.size,
+      durationMs: probed.durationMs,
+      width: probed.width,
+      height: probed.height,
+      videoCodec: probed.videoCodec,
+      container: extensionOf(filename),
+      capturedAt: captured.capturedAt,
+      capturedAtSource: captured.source,
+      metadataCreatedAt: probed.metadataCreatedAt,
+      metadataError: hashError ?? probed.error,
+      thumbnailFile,
+      now,
+    };
+    const existed = repo.getVideo(videoId);
+    if (existed) repo.updateVideoTechnical(videoWrite);
+    else repo.insertVideo(videoWrite);
+
+    const moved = !location
+      ? claimGoneLocation(repo, deps, videoId, input.seen, input.libraryId)
+      : null;
+    const locationId = location?.id ?? moved?.id ?? randomUUID();
+    const write = locationWrite(locationId, videoId, input, stat, filename, deps);
+    if (location || moved) repo.updateLocation(write);
+    else repo.insertLocation(write);
+    input.seen.add(locationId);
+
+    if (!existed && !location && !moved) outcome = 'added';
+    else if (!location && !moved) outcome = 'linked';
+    else if (location && location.videoId !== videoId) outcome = 'linked';
+    else if (hashChanged && !plan.keepId) outcome = 'added';
+    else {
+      const previous = location ?? moved;
+      outcome =
+        previous && changedLocation(previous, input.filePath, input.libraryId)
+          ? 'updated'
+          : 'unchanged';
+    }
+  });
+  return outcome;
 }
 
-async function confirmContentMatch(
+type MatchPlan = {
+  keepId: string | null;
+  mergeIds: string[];
+  fullHash: string | null;
+};
+
+async function planContentMatch(
   repo: CatalogRepository,
   deps: ScanDeps,
   input: { filePath: string; hash: string; size: number; exceptVideoId?: string },
-): Promise<VideoRecord | null> {
+): Promise<MatchPlan> {
+  const covers = deps.hashCoversFile(input.size);
+  let fullHash: string | null = null;
+  if (!covers) {
+    try {
+      fullHash = await deps.fullHash(input.filePath);
+    } catch {
+      fullHash = null;
+    }
+  }
   const candidates = repo
     .findVideosByPartialHash(input.hash, input.size)
     .filter((video) => video.id !== input.exceptVideoId);
-  if (candidates.length === 0) return null;
-
-  let confirmed: VideoRecord[];
-  if (deps.hashCoversFile(input.size)) {
-    confirmed = candidates;
+  const groups = new Map<string, VideoRecord[]>();
+  const add = (hash: string, video: VideoRecord) => {
+    const group = groups.get(hash) ?? [];
+    if (!group.some((item) => item.id === video.id)) group.push(video);
+    groups.set(hash, group);
+  };
+  if (covers) {
+    for (const candidate of candidates) add(input.hash, candidate);
   } else {
-    const full = await deps.fullHash(input.filePath);
-    confirmed = [];
     for (const candidate of candidates) {
-      const known = await knownFullHash(repo, deps, candidate);
-      if (known && known === full) confirmed.push(repo.getVideo(candidate.id) ?? candidate);
+      const known = await readCandidateFullHash(repo, deps, candidate);
+      if (known) add(known, candidate);
     }
-    if (confirmed.length === 0) return null;
-    const canonical = collapseMatches(repo, confirmed, deps.now());
-    repo.setFullHash(canonical.id, full, FULL_HASH_KIND, deps.now());
-    return repo.getVideo(canonical.id);
+    if (fullHash) {
+      const owner = repo.findVideoByFullHash(fullHash);
+      if (owner && owner.id !== input.exceptVideoId) add(fullHash, owner);
+    }
   }
-
-  return collapseMatches(repo, confirmed, deps.now());
+  const key = covers ? input.hash : fullHash;
+  const matched = key ? (groups.get(key) ?? []) : [];
+  if (matched.length === 0) return { keepId: null, mergeIds: [], fullHash };
+  const ordered = [...matched].sort((left, right) => (left.createdAt < right.createdAt ? -1 : 1));
+  const keep = ordered[0];
+  if (!keep) return { keepId: null, mergeIds: [], fullHash };
+  return {
+    keepId: keep.id,
+    mergeIds: ordered.slice(1).map((video) => video.id),
+    fullHash,
+  };
 }
 
-async function knownFullHash(
+async function readCandidateFullHash(
   repo: CatalogRepository,
   deps: ScanDeps,
   video: VideoRecord,
 ): Promise<string | null> {
   if (video.fullHash) return video.fullHash;
-  const sample = repo.locationsForVideo(video.id).find((location) => deps.exists(location.path));
-  if (!sample) return null;
-  const hash = await deps.fullHash(sample.path);
-  repo.setFullHash(video.id, hash, FULL_HASH_KIND, deps.now());
-  return hash;
+  for (const location of repo.locationsForVideo(video.id)) {
+    if (!deps.exists(location.path)) continue;
+    let stat: IndexedStat;
+    try {
+      stat = await deps.stat(location.path);
+    } catch {
+      continue;
+    }
+    if (location.volumeId && stat.volumeId && location.volumeId !== stat.volumeId) continue;
+    if (location.sizeBytes != null && stat.size !== location.sizeBytes) continue;
+    if (location.mtimeNs && stat.mtimeNs !== location.mtimeNs) continue;
+    if (video.contentHash) {
+      try {
+        const partial = await deps.hash(location.path);
+        if (partial.hash !== video.contentHash) continue;
+      } catch {
+        continue;
+      }
+    }
+    try {
+      return await deps.fullHash(location.path);
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
-function collapseMatches(
+function identityLocation(
   repo: CatalogRepository,
-  matches: readonly VideoRecord[],
-  now: string,
-): VideoRecord {
-  const ordered = [...matches].sort((left, right) =>
-    left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0,
+  deps: ScanDeps,
+  stat: IndexedStat,
+  filePath: string,
+  seen: ReadonlySet<string>,
+  contentHash: string | null,
+): LocationRecord | null {
+  if (!stat.volumeId || !stat.fileId) return null;
+  const candidate = pickIdentityMatch(
+    repo.findLocationsByIdentity(stat.volumeId, stat.fileId),
+    filePath,
+    (candidatePath) => deps.exists(candidatePath),
   );
-  const keep = ordered[0];
-  if (!keep) throw new Error('Duplicate match list was empty');
-  const drops = ordered.slice(1).map((video) => video.id);
-  if (drops.length > 0) repo.mergeVideos(keep.id, drops, now);
-  return repo.getVideo(keep.id) ?? keep;
+  if (!candidate || seen.has(candidate.id)) return null;
+  const video = repo.getVideo(candidate.videoId);
+  const sameTime = candidate.sizeBytes === stat.size && candidate.mtimeNs === stat.mtimeNs;
+  const sameHash = Boolean(contentHash && video?.contentHash === contentHash);
+  if (!sameTime && !sameHash) return null;
+  return candidate;
 }
 
 function claimGoneLocation(
@@ -407,10 +528,13 @@ function claimGoneLocation(
   deps: ScanDeps,
   videoId: string,
   seen: ReadonlySet<string>,
+  libraryId: string,
 ): LocationRecord | null {
-  const gone = repo
-    .locationsForVideo(videoId)
-    .filter((location) => !seen.has(location.id) && !deps.exists(location.path));
+  const gone = repo.locationsForVideo(videoId).filter((location) => {
+    return (
+      !seen.has(location.id) && location.libraryId === libraryId && !deps.exists(location.path)
+    );
+  });
   return gone.length === 1 ? (gone[0] ?? null) : null;
 }
 
@@ -537,6 +661,63 @@ function emit(
   progress: ScanProgress,
 ): void {
   onProgress?.(progress);
+}
+
+async function collectWalk(
+  deps: ScanDeps,
+  root: string,
+  onBatch: (count: number) => void,
+): Promise<{ files: string[]; listed: Set<string>; unreadable: string[] }> {
+  if (deps.walkLibrary) {
+    const walked = await deps.walkLibrary(root);
+    return { files: walked.files, listed: new Set(walked.listed), unreadable: walked.unreadable };
+  }
+  const files: string[] = [];
+  const listed = new Set<string>([root]);
+  for await (const file of deps.walkVideos(root)) {
+    files.push(file);
+    listed.add(parentDir(file));
+    if (files.length % 50 === 0) {
+      onBatch(files.length);
+      await yieldNow();
+    }
+  }
+  return { files, listed, unreadable: [] };
+}
+
+function markUnseen(
+  repo: CatalogRepository,
+  deps: ScanDeps,
+  thumbsDir: string,
+  libraryId: string,
+  root: string,
+  walked: { listed: Set<string>; unreadable: string[] },
+  seen: ReadonlySet<string>,
+): number {
+  if (!deps.isDirectory(root)) return 0;
+  const ids = repo
+    .locationsForLibrary(libraryId)
+    .filter((location) => {
+      if (seen.has(location.id)) return false;
+      if (underDirectory(location.path, walked.unreadable)) return false;
+      return walked.listed.has(parentDir(location.path));
+    })
+    .map((location) => location.id);
+  const missing = repo.markMissingIds(ids, deps.now());
+  for (const name of repo.deleteEmptyOrphans()) {
+    const base = path.basename(name);
+    if (base === name) fs.rmSync(path.join(thumbsDir, base), { force: true });
+  }
+  return missing;
+}
+
+function underDirectory(filePath: string, directories: readonly string[]): boolean {
+  return directories.some((dir) => {
+    if (filePath === dir) return true;
+    const separator = filePath.includes('\\') ? '\\' : '/';
+    const prefix = dir.endsWith('/') || dir.endsWith('\\') ? dir : `${dir}${separator}`;
+    return filePath.startsWith(prefix);
+  });
 }
 
 function yieldNow(): Promise<void> {

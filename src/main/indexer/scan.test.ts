@@ -565,7 +565,7 @@ describe('scanLibrary', () => {
       return fullHashes.get(filePath) ?? 'missing';
     };
     await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([original.path]);
 
     const same = fakeDeps({
       directories: ['D:\\dance'],
@@ -583,7 +583,7 @@ describe('scanLibrary', () => {
     const linked = await scanLibrary(db, 'lib', same.deps, { thumbsDir: tempDir() });
     expect(linked.added).toBe(0);
     expect(linked.linked).toBe(1);
-    expect(calls).toEqual(['D:\\dance\\same.mp4', original.path]);
+    expect(calls).toEqual(['D:\\dance\\same.mp4']);
     expect(db.prepare(`SELECT COUNT(*) AS count FROM videos`).get()).toEqual({ count: 1 });
     expect(db.prepare(`SELECT full_hash FROM videos`).get()).toEqual({ full_hash: 'full-a' });
 

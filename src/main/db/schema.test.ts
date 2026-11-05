@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createRepository } from '../indexer/repository';
 import { applyMigrations, migrate } from './migrate';
 import { migration001 } from './migrations/001_init';
 import { migration002 } from './migrations/002_catalog';
@@ -21,7 +22,7 @@ describe('catalog schema', () => {
   it('upgrades a phase 0 database and keeps the references-only policy', () => {
     const db = openMemory();
     applyMigrations(db, [migration001]);
-    expect(migrate(db)).toEqual(['002_catalog', '003_content_identity']);
+    expect(migrate(db)).toEqual(['002_catalog', '003_content_identity', '004_path_key']);
     expect(migrate(db)).toEqual([]);
 
     const policy = db.prepare(`SELECT value FROM app_meta WHERE key = 'catalog_policy'`).get() as {
@@ -48,6 +49,7 @@ describe('catalog schema', () => {
       'video_instructors',
       'video_links',
       'video_locations',
+      'video_redirects',
       'video_tags',
       'videos',
     ]);
@@ -92,7 +94,7 @@ describe('catalog schema', () => {
        ) VALUES ('vid', 'lib', '/dance/a.mp4', 'a.mp4', 'Warmup', 'keep me', 1, 't', 't')`,
     ).run();
 
-    expect(migrate(db)).toEqual(['003_content_identity']);
+    expect(migrate(db)).toEqual(['003_content_identity', '004_path_key']);
     const video = db.prepare(`SELECT title, notes, favorite, excluded FROM videos`).get() as {
       title: string;
       notes: string;
@@ -114,5 +116,38 @@ describe('catalog schema', () => {
     };
     expect(videos.count).toBe(1);
     expect(locations.count).toBe(0);
+  });
+
+  it('keeps lesson links and the exclusion time when two videos are merged', () => {
+    const db = openMemory();
+    migrate(db);
+    const now = '2024-06-02T00:00:00.000Z';
+    db.prepare(
+      `INSERT INTO videos (id, title, excluded, excluded_at, created_at, updated_at)
+       VALUES ('keep', NULL, 0, NULL, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z'),
+              ('drop', 'Tagged', 1, '2024-05-01T00:00:00.000Z', '2024-02-01T00:00:00.000Z', '2024-02-01T00:00:00.000Z'),
+              ('other', NULL, 0, NULL, '2024-03-01T00:00:00.000Z', '2024-03-01T00:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_links (id, video_id, other_video_id, kind, created_at)
+       VALUES ('link', 'drop', 'other', 'lesson_demo', 't')`,
+    ).run();
+    createRepository(db).mergeVideos('keep', ['drop'], now);
+    const kept = db
+      .prepare(`SELECT title, excluded, excluded_at FROM videos WHERE id = 'keep'`)
+      .get();
+    const link = db.prepare(`SELECT video_id, other_video_id FROM video_links`).get() as {
+      video_id: string;
+      other_video_id: string;
+    };
+    const redirect = db.prepare(`SELECT to_id FROM video_redirects WHERE from_id = 'drop'`).get();
+    expect(kept).toEqual({
+      title: 'Tagged',
+      excluded: 1,
+      excluded_at: '2024-05-01T00:00:00.000Z',
+    });
+    expect(link).toEqual({ video_id: 'keep', other_video_id: 'other' });
+    expect(redirect).toEqual({ to_id: 'keep' });
+    expect(db.prepare(`SELECT id FROM videos WHERE id = 'drop'`).get()).toBeUndefined();
   });
 });

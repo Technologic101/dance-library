@@ -90,6 +90,10 @@ export const migration003: Migration = {
         created_at, updated_at
       FROM videos;
 
+      CREATE TABLE video_instructors_import AS SELECT * FROM video_instructors;
+      CREATE TABLE video_tags_import AS SELECT * FROM video_tags;
+      CREATE TABLE video_links_import AS SELECT * FROM video_links;
+
       DROP TABLE video_instructors;
       DROP TABLE video_tags;
       DROP TABLE video_links;
@@ -158,6 +162,17 @@ export const migration003: Migration = {
         CHECK (video_id <> other_video_id)
       );
       CREATE UNIQUE INDEX video_links_pair ON video_links (video_id, other_video_id, kind);
+
+      INSERT INTO video_instructors (video_id, instructor_id)
+      SELECT video_id, instructor_id FROM video_instructors_import;
+      INSERT INTO video_tags (video_id, tag_id)
+      SELECT video_id, tag_id FROM video_tags_import;
+      INSERT INTO video_links (id, video_id, other_video_id, kind, created_at)
+      SELECT id, video_id, other_video_id, kind, created_at FROM video_links_import;
+
+      DROP TABLE video_instructors_import;
+      DROP TABLE video_tags_import;
+      DROP TABLE video_links_import;
     `);
   },
 };

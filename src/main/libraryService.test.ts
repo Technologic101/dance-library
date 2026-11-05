@@ -131,13 +131,13 @@ describe('createLibraryService', () => {
        ) VALUES ('loc', 'vid', 'lib', ?, 'clip.mp4', 't', 't')`,
     ).run(video);
 
-    expect(await service.excludeVideos(['vid'])).toEqual({ changed: 1 });
+    expect(await service.excludeVideos(['vid'])).toEqual({ changed: 1, requested: 1 });
     expect(service.listVideos()).toEqual([]);
     expect(service.listVideos({ excluded: true })).toHaveLength(1);
     expect(service.countVideos()).toEqual({ visible: 0, excluded: 1 });
     expect(fs.readFileSync(video, 'utf8')).toBe('video-bytes');
 
-    expect(await service.restoreVideos(['vid'])).toEqual({ changed: 1 });
+    expect(await service.restoreVideos(['vid'])).toEqual({ changed: 1, requested: 1 });
     expect(service.listVideos()).toHaveLength(1);
     expect(service.listVideos({ excluded: true })).toEqual([]);
     expect(fs.readFileSync(video, 'utf8')).toBe('video-bytes');

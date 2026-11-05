@@ -53,11 +53,17 @@ export function createLibraryService(
     },
 
     excludeVideos(ids: readonly string[]): Promise<VideoChangeResult> {
-      return enqueue(async () => ({ changed: repo.excludeVideos(ids, new Date().toISOString()) }));
+      return Promise.resolve({
+        changed: repo.excludeVideos(ids, new Date().toISOString()),
+        requested: ids.length,
+      });
     },
 
     restoreVideos(ids: readonly string[]): Promise<VideoChangeResult> {
-      return enqueue(async () => ({ changed: repo.restoreVideos(ids, new Date().toISOString()) }));
+      return Promise.resolve({
+        changed: repo.restoreVideos(ids, new Date().toISOString()),
+        requested: ids.length,
+      });
     },
 
     addPaths(

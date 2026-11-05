@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { pathKey } from './paths';
 import {
   thumbnailUrl,
   type CaptureDateSource,
@@ -125,8 +126,8 @@ export function createRepository(db: Database.Database) {
   const locationsByIdentity = db.prepare(
     `${LOCATION_SELECT} WHERE volume_id = ? AND file_id = ? ORDER BY created_at, id`,
   );
+  const locationByPathKey = db.prepare(`${LOCATION_SELECT} WHERE path_key = ?`);
   const locationByPath = db.prepare(`${LOCATION_SELECT} WHERE path = ?`);
-  const locationByPathNoCase = db.prepare(`${LOCATION_SELECT} WHERE path = ? COLLATE NOCASE`);
   const videoById = db.prepare(`${VIDEO_SELECT} WHERE id = ?`);
   const videosByHash = db.prepare(
     `${VIDEO_SELECT} WHERE content_hash = ? AND size_bytes = ? ORDER BY created_at, id`,
@@ -168,10 +169,10 @@ export function createRepository(db: Database.Database) {
   `);
   const insertLocationStmt = db.prepare(`
     INSERT INTO video_locations (
-      id, video_id, library_id, path, filename, volume_id, file_id, size_bytes, mtime_ns,
+      id, video_id, library_id, path, path_key, filename, volume_id, file_id, size_bytes, mtime_ns,
       file_created_at, file_modified_at, presence, last_scan_generation, created_at, updated_at
     ) VALUES (
-      @id, @videoId, @libraryId, @path, @filename, @volumeId, @fileId, @sizeBytes, @mtimeNs,
+      @id, @videoId, @libraryId, @path, @pathKey, @filename, @volumeId, @fileId, @sizeBytes, @mtimeNs,
       @fileCreatedAt, @fileModifiedAt, 'present', @generation, @now, @now
     )
   `);
@@ -180,6 +181,7 @@ export function createRepository(db: Database.Database) {
       video_id = @videoId,
       library_id = @libraryId,
       path = @path,
+      path_key = @pathKey,
       filename = @filename,
       volume_id = @volumeId,
       file_id = @fileId,
@@ -254,8 +256,37 @@ export function createRepository(db: Database.Database) {
     },
 
     findLocationByPath(filePath: string): LocationRecord | null {
-      const stmt = process.platform === 'win32' ? locationByPathNoCase : locationByPath;
-      return (stmt.get(filePath) as LocationRecord | undefined) ?? null;
+      const byKey = locationByPathKey.get(pathKey(filePath)) as LocationRecord | undefined;
+      if (byKey) return byKey;
+      return (locationByPath.get(filePath) as LocationRecord | undefined) ?? null;
+    },
+
+    findVideoByFullHash(hash: string): VideoRecord | null {
+      return (
+        (db.prepare(`${VIDEO_SELECT} WHERE full_hash = ?`).get(hash) as VideoRecord | undefined) ??
+        null
+      );
+    },
+
+    locationsForLibrary(libraryId: string): LocationRecord[] {
+      return db
+        .prepare(`${LOCATION_SELECT} WHERE library_id = ?`)
+        .all(libraryId) as LocationRecord[];
+    },
+
+    resolveVideoId(id: string): string {
+      let current = id;
+      const lookup = db.prepare(`SELECT to_id AS toId FROM video_redirects WHERE from_id = ?`);
+      for (let hop = 0; hop < 8; hop += 1) {
+        const next = lookup.get(current) as { toId: string } | undefined;
+        if (!next) return current;
+        current = next.toId;
+      }
+      return current;
+    },
+
+    transaction(work: () => void): void {
+      db.transaction(work)();
     },
 
     getVideo(id: string): VideoRecord | null {
@@ -286,11 +317,11 @@ export function createRepository(db: Database.Database) {
     },
 
     insertLocation(location: LocationWrite): void {
-      insertLocationStmt.run(location);
+      insertLocationStmt.run({ ...location, pathKey: pathKey(location.path) });
     },
 
     updateLocation(location: LocationWrite): void {
-      updateLocationStmt.run(location);
+      updateLocationStmt.run({ ...location, pathKey: pathKey(location.path) });
     },
 
     noteError(videoId: string, message: string, now: string): void {
@@ -301,15 +332,48 @@ export function createRepository(db: Database.Database) {
       );
     },
 
-    markMissing(libraryId: string, generation: number, now: string): number {
-      const result = db
+    markMissingIds(ids: readonly string[], now: string): number {
+      const stmt = db.prepare(
+        `UPDATE video_locations
+         SET presence = 'missing', updated_at = ?
+         WHERE id = ? AND presence = 'present'`,
+      );
+      const apply = db.transaction(() => {
+        let changed = 0;
+        for (const id of ids) changed += stmt.run(now, id).changes;
+        return changed;
+      });
+      return apply();
+    },
+
+    /**
+     * Drops content rows that have no locations and no user-entered fields.
+     * Returns thumbnail file names so the caller can delete only those files.
+     */
+    deleteEmptyOrphans(): string[] {
+      const rows = db
         .prepare(
-          `UPDATE video_locations
-           SET presence = 'missing', updated_at = ?
-           WHERE library_id = ? AND last_scan_generation < ? AND presence = 'present'`,
+          `SELECT id, thumbnail_file AS thumbnailFile FROM videos v
+           WHERE excluded = 0
+             AND title IS NULL AND notes IS NULL AND video_type IS NULL AND style_id IS NULL
+             AND level IS NULL AND event_name IS NULL AND event_date IS NULL AND rating IS NULL
+             AND favorite = 0
+             AND NOT EXISTS (SELECT 1 FROM video_locations WHERE video_id = v.id)
+             AND NOT EXISTS (SELECT 1 FROM video_tags WHERE video_id = v.id)
+             AND NOT EXISTS (SELECT 1 FROM video_instructors WHERE video_id = v.id)
+             AND NOT EXISTS (
+               SELECT 1 FROM video_links WHERE video_id = v.id OR other_video_id = v.id
+             )`,
         )
-        .run(now, libraryId, generation);
-      return result.changes;
+        .all() as { id: string; thumbnailFile: string | null }[];
+      const remove = db.prepare(`DELETE FROM videos WHERE id = ?`);
+      const apply = db.transaction(() => {
+        for (const row of rows) remove.run(row.id);
+      });
+      apply();
+      return rows
+        .map((row) => row.thumbnailFile)
+        .filter((file): file is string => file != null && file.length > 0);
     },
 
     /**
@@ -334,6 +398,17 @@ export function createRepository(db: Database.Database) {
                full_hash_kind = COALESCE(full_hash_kind, ?)
              WHERE id = ?`,
           ).run(dropHash?.fullHash ?? null, dropHash?.fullHashKind ?? null, keepId);
+          db.prepare(
+            `UPDATE videos SET
+               excluded_at = CASE
+                 WHEN excluded = 0 AND (SELECT excluded FROM videos WHERE id = ?) = 1
+                   THEN (SELECT excluded_at FROM videos WHERE id = ?)
+                 WHEN excluded = 1 AND (SELECT excluded FROM videos WHERE id = ?) = 1
+                   THEN MIN(excluded_at, (SELECT excluded_at FROM videos WHERE id = ?))
+                 ELSE excluded_at
+               END
+             WHERE id = ?`,
+          ).run(dropId, dropId, dropId, dropId, keepId);
           db.prepare(
             `UPDATE videos SET
                title = COALESCE(title, (SELECT title FROM videos WHERE id = ?)),
@@ -380,6 +455,24 @@ export function createRepository(db: Database.Database) {
             `INSERT OR IGNORE INTO video_tags (video_id, tag_id)
              SELECT ?, tag_id FROM video_tags WHERE video_id = ?`,
           ).run(keepId, dropId);
+          db.prepare(
+            `INSERT OR IGNORE INTO video_links (id, video_id, other_video_id, kind, created_at)
+             SELECT
+               lower(hex(randomblob(16))),
+               CASE WHEN video_id = ? THEN ? ELSE video_id END,
+               CASE WHEN other_video_id = ? THEN ? ELSE other_video_id END,
+               kind,
+               created_at
+             FROM video_links
+             WHERE (video_id = ? OR other_video_id = ?)
+               AND CASE WHEN video_id = ? THEN ? ELSE video_id END
+                   <> CASE WHEN other_video_id = ? THEN ? ELSE other_video_id END`,
+          ).run(dropId, keepId, dropId, keepId, dropId, dropId, dropId, keepId, dropId, keepId);
+          db.prepare(`UPDATE video_redirects SET to_id = ? WHERE to_id = ?`).run(keepId, dropId);
+          db.prepare(
+            `INSERT INTO video_redirects (from_id, to_id) VALUES (?, ?)
+             ON CONFLICT(from_id) DO UPDATE SET to_id = excluded.to_id`,
+          ).run(dropId, keepId);
           db.prepare(`DELETE FROM videos WHERE id = ?`).run(dropId);
         }
       });
@@ -463,7 +556,7 @@ export function createRepository(db: Database.Database) {
       );
       const apply = db.transaction(() => {
         let changed = 0;
-        for (const id of ids) changed += stmt.run(now, now, id).changes;
+        for (const id of ids) changed += stmt.run(now, now, this.resolveVideoId(id)).changes;
         return changed;
       });
       return apply();
@@ -475,7 +568,7 @@ export function createRepository(db: Database.Database) {
       );
       const apply = db.transaction(() => {
         let changed = 0;
-        for (const id of ids) changed += stmt.run(now, id).changes;
+        for (const id of ids) changed += stmt.run(now, this.resolveVideoId(id)).changes;
         return changed;
       });
       return apply();

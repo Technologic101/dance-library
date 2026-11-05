@@ -85,8 +85,8 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
     listLibraries: async () => [library],
     listVideos: async () => [present, missing],
     countVideos: async () => ({ visible: 2, excluded: 0 }),
-    excludeVideos: async () => ({ changed: 1 }),
-    restoreVideos: async () => ({ changed: 1 }),
+    excludeVideos: async () => ({ changed: 1, requested: 1 }),
+    restoreVideos: async () => ({ changed: 1, requested: 1 }),
     addLibraries: async () => ({ added: [library], skipped: [], scan: null }),
     removeLibrary: async () => ({ ok: true }),
     scanLibrary: async () => ({
@@ -167,7 +167,7 @@ describe('App', () => {
   });
 
   it('removes the selected videos from the catalog', async () => {
-    const excludeVideos = vi.fn(async () => ({ changed: 2 }));
+    const excludeVideos = vi.fn(async () => ({ changed: 2, requested: 2 }));
     api({ excludeVideos });
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });

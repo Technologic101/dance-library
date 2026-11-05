@@ -167,7 +167,12 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     const ids = [...selected];
     if (ids.length === 0) return;
     await runTask(async () => {
-      await api.excludeVideos(ids);
+      const result = await api.excludeVideos(ids);
+      if (result.changed < result.requested) {
+        setNotice(
+          `${result.requested - result.changed} selected videos were already merged or removed.`,
+        );
+      }
     });
   }
 

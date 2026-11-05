@@ -5,7 +5,8 @@ import { probeVideo } from './ffprobe';
 import type { IndexedStat, ScanDeps } from './scan';
 import { writeThumbnail } from './thumbnails';
 import { directoryReadable, walkVideos } from './walk';
-import { describePath, listMounts, type Mount } from './volumes';
+import { describePath, fileIdIsStable, isStableVolumeId, listMounts, type Mount } from './volumes';
+import { walkLibrary } from './walk';
 
 /** Real filesystem, ffprobe, and ffmpeg. Video files are opened read-only. */
 export function createScanDeps(thumbsDir: string): ScanDeps {
@@ -33,6 +34,7 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
     },
     readDirectory: directoryReadable,
     walkVideos,
+    walkLibrary,
     stat: async (filePath) => statIndexedFile(filePath, mounts ?? (mounts = await listMounts())),
     hash: async (filePath) => {
       const hashed = await partialContentHash(filePath);
@@ -63,6 +65,7 @@ export async function statIndexedFile(
     mtime: new Date(Number(stat.mtimeNs / 1_000_000n)),
     birthtime: stat.birthtimeNs > 0n ? new Date(Number(stat.birthtimeNs / 1_000_000n)) : null,
     fileId: stat.ino > 0n ? stat.ino.toString(10) : null,
-    volumeId: location?.volumeId ?? null,
+    volumeId: isStableVolumeId(location?.volumeId) ? location.volumeId : null,
+    fileIdStable: fileIdIsStable(location?.fsType),
   };
 }

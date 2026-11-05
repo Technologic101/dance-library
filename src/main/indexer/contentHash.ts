@@ -33,14 +33,16 @@ export async function partialContentHash(
     hash.update(Buffer.from(String(size), 'utf8'));
     hash.update(Buffer.from([0]));
     if (size <= chunkBytes * 2) {
-      const buffer = Buffer.alloc(size);
-      if (size > 0) await handle.read(buffer, 0, size, 0);
-      hash.update(buffer);
+      if (size > 0) {
+        const buffer = Buffer.alloc(size);
+        await readExact(handle, buffer, 0, size);
+        hash.update(buffer);
+      }
     } else {
       const head = Buffer.alloc(chunkBytes);
       const tail = Buffer.alloc(chunkBytes);
-      await handle.read(head, 0, chunkBytes, 0);
-      await handle.read(tail, 0, chunkBytes, size - chunkBytes);
+      await readExact(handle, head, 0, chunkBytes);
+      await readExact(handle, tail, size - chunkBytes, chunkBytes);
       hash.update(head);
       hash.update(tail);
     }
@@ -58,7 +60,7 @@ export async function fullContentHash(filePath: string): Promise<string> {
     const buffer = Buffer.alloc(DEFAULT_HASH_CHUNK);
     let position = 0;
     for (;;) {
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      const bytesRead = await readSome(handle, buffer, position, buffer.length);
       if (bytesRead <= 0) break;
       hash.update(buffer.subarray(0, bytesRead));
       position += bytesRead;
@@ -67,6 +69,32 @@ export async function fullContentHash(filePath: string): Promise<string> {
   } finally {
     await handle.close();
   }
+}
+
+async function readExact(
+  handle: fs.promises.FileHandle,
+  buffer: Buffer,
+  position: number,
+  length: number,
+): Promise<void> {
+  const bytesRead = await readSome(handle, buffer, position, length);
+  if (bytesRead !== length) throw new Error('Unexpected end of file while hashing');
+}
+
+/** Reads until `length` bytes arrive or the file ends. A short read is not treated as EOF. */
+async function readSome(
+  handle: fs.promises.FileHandle,
+  buffer: Buffer,
+  position: number,
+  length: number,
+): Promise<number> {
+  let offset = 0;
+  while (offset < length) {
+    const { bytesRead } = await handle.read(buffer, offset, length - offset, position + offset);
+    if (bytesRead <= 0) return offset;
+    offset += bytesRead;
+  }
+  return offset;
 }
 
 function sizeNumber(size: number | bigint): number {

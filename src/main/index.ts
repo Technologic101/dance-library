@@ -32,15 +32,17 @@ if (started) app.quit();
 app.setName('dance-library');
 registerThumbScheme();
 
-const userDataOverride = process.env.DANCE_LIBRARY_USER_DATA;
+function unpackagedEnv(name: string): string | undefined {
+  if (app.isPackaged) return undefined;
+  const value = process.env[name];
+  return value && value.length > 0 ? value : undefined;
+}
+
+const userDataOverride = unpackagedEnv('DANCE_LIBRARY_USER_DATA');
 if (userDataOverride) app.setPath('userData', path.resolve(userDataOverride));
 
-const screenshotPath = process.env.DANCE_LIBRARY_SCREENSHOT
-  ? path.resolve(process.env.DANCE_LIBRARY_SCREENSHOT)
-  : undefined;
-const importPath = process.env.DANCE_LIBRARY_IMPORT
-  ? path.resolve(process.env.DANCE_LIBRARY_IMPORT)
-  : undefined;
+const screenshotPath = unpackagedEnv('DANCE_LIBRARY_SCREENSHOT');
+const importPath = unpackagedEnv('DANCE_LIBRARY_IMPORT');
 
 let screenshotTimer: ReturnType<typeof setTimeout> | undefined;
 let capturing = false;
@@ -154,7 +156,7 @@ function registerIpc(service: LibraryService): void {
         title: 'Remove library folder',
         message: `Remove "${library.label}" from the catalog?`,
         detail:
-          'Catalog entries and thumbnails for this folder are deleted. The video files stay where they are.',
+          'Locations in this folder are removed from the catalog. Video files stay where they are. A video you have titled, tagged, or excluded is kept.',
       };
       const confirm = parent
         ? await dialog.showMessageBox(parent, options)
@@ -177,7 +179,12 @@ function registerIpc(service: LibraryService): void {
   });
 
   ipcMain.handle(IpcChannels.viewReady, async (event) => {
-    if (!screenshotPath || capturing) return;
+    const picture = screenshotPath ? path.resolve(screenshotPath) : undefined;
+    if (!picture || capturing) return;
+    if (fs.existsSync(picture)) {
+      console.error(`[dance-library] screenshot path already exists: ${picture}`);
+      return;
+    }
     capturing = true;
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) return;
@@ -185,9 +192,9 @@ function registerIpc(service: LibraryService): void {
     await new Promise((resolve) => setTimeout(resolve, 400));
     try {
       const image = await window.webContents.capturePage();
-      fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
-      fs.writeFileSync(screenshotPath, image.toPNG());
-      console.log(`[dance-library] wrote screenshot ${screenshotPath}`);
+      fs.mkdirSync(path.dirname(picture), { recursive: true });
+      fs.writeFileSync(picture, image.toPNG());
+      console.log(`[dance-library] wrote screenshot ${picture}`);
       app.exit(0);
     } catch (error) {
       console.error('[dance-library] screenshot failed', error);
