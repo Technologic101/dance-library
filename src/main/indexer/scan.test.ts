@@ -17,6 +17,15 @@ import { describeWindowsPath, type Mount } from './volumes';
 const directories: string[] = [];
 const databases: Database.Database[] = [];
 
+function hasEntries(dir: string, files: { path: string }[], directories: string[]): boolean {
+  const slash = dir.includes('\\') ? '\\' : '/';
+  const prefix = dir.endsWith('\\') || dir.endsWith('/') ? dir : `${dir}${slash}`;
+  return (
+    files.some((file) => file.path.startsWith(prefix)) ||
+    directories.some((child) => child.startsWith(prefix))
+  );
+}
+
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dance-library-scan-'));
   directories.push(dir);
@@ -63,6 +72,7 @@ function fakeDeps(input: {
     isDirectory: (filePath) => input.directories.includes(filePath),
     exists: (filePath) => input.directories.includes(filePath) || fileMap.has(filePath),
     readDirectory: async () => input.readable !== false,
+    directoryHasEntries: async (dir) => hasEntries(dir, input.files, input.directories),
     walkVideos: async function* (root) {
       const prefix = root.endsWith('\\') ? root : `${root}\\`;
       for (const file of input.files) {
@@ -70,6 +80,19 @@ function fakeDeps(input: {
       }
     },
     stat: async (filePath) => {
+      const listed = await deps.listMounts();
+      const named = listed.length > 0;
+      if (input.directories.includes(filePath)) {
+        return {
+          size: 0,
+          mtimeNs: '0',
+          mtime: new Date('2024-06-01T00:00:00.000Z'),
+          birthtime: null,
+          fileId: null,
+          volumeId: named ? (input.files[0]?.volumeId ?? input.mounts[0]?.volumeId ?? null) : null,
+          fileIdStable: true,
+        };
+      }
       const file = fileMap.get(filePath);
       if (!file) {
         const error = new Error('missing') as NodeJS.ErrnoException;
@@ -82,7 +105,7 @@ function fakeDeps(input: {
         mtime: file.mtime ?? new Date('2024-06-01T15:04:05.000Z'),
         birthtime: file.birthtime ?? null,
         fileId: file.fileId,
-        volumeId: file.volumeId,
+        volumeId: named ? file.volumeId : null,
       };
       return stat;
     },

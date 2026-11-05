@@ -279,6 +279,21 @@ export function createRepository(db: Database.Database) {
         .all(libraryId) as LocationRecord[];
     },
 
+    samplePresentLocations(libraryId: string, limit: number): LocationRecord[] {
+      return takeLocationSample(db, libraryId, limit, 'present');
+    },
+
+    sampleLocations(libraryId: string, limit: number): LocationRecord[] {
+      return takeLocationSample(db, libraryId, limit, null);
+    },
+
+    countLocations(libraryId: string): number {
+      const row = db
+        .prepare(`SELECT COUNT(*) AS count FROM video_locations WHERE library_id = ?`)
+        .get(libraryId) as { count: number };
+      return row.count;
+    },
+
     resolveVideoId(id: string): string {
       let current = id;
       const lookup = db.prepare(`SELECT to_id AS toId FROM video_redirects WHERE from_id = ?`);
@@ -621,6 +636,23 @@ export function createRepository(db: Database.Database) {
       return result.changes > 0;
     },
   };
+}
+
+function takeLocationSample(
+  db: Database.Database,
+  libraryId: string,
+  limit: number,
+  presence: 'present' | null,
+): LocationRecord[] {
+  const presenceSql = presence ? `AND presence = '${presence}'` : '';
+  return db
+    .prepare(
+      `${LOCATION_SELECT}
+       WHERE library_id = ? ${presenceSql}
+       ORDER BY last_scan_generation DESC, updated_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(libraryId, limit) as LocationRecord[];
 }
 
 export type CatalogRepository = ReturnType<typeof createRepository>;
