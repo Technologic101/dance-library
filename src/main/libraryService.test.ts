@@ -109,8 +109,8 @@ describe('createLibraryService', () => {
 
     expect(await service.removeLibrary(libraryId)).toBe(true);
     expect(service.listLibraries()).toEqual([]);
-    expect(service.listVideos().map((item) => item.id)).toEqual(['vid']);
-    expect(service.listVideos()[0]).toMatchObject({
+    expect(service.listVideos().items.map((item) => item.id)).toEqual(['vid']);
+    expect(service.listVideos().items[0]).toMatchObject({
       displayTitle: 'Keep me',
       locations: [],
     });
@@ -139,14 +139,14 @@ describe('createLibraryService', () => {
     ).run(video);
 
     expect(await service.excludeVideos(['vid'])).toEqual({ changed: 1, requested: 1 });
-    expect(service.listVideos()).toEqual([]);
-    expect(service.listVideos({ excluded: true })).toHaveLength(1);
+    expect(service.listVideos().items).toEqual([]);
+    expect(service.listVideos({ excluded: true }).items).toHaveLength(1);
     expect(service.countVideos()).toEqual({ visible: 0, excluded: 1 });
     expect(fs.readFileSync(video, 'utf8')).toBe('video-bytes');
 
     expect(await service.restoreVideos(['vid'])).toEqual({ changed: 1, requested: 1 });
-    expect(service.listVideos()).toHaveLength(1);
-    expect(service.listVideos({ excluded: true })).toEqual([]);
+    expect(service.listVideos().items).toHaveLength(1);
+    expect(service.listVideos({ excluded: true }).items).toEqual([]);
     expect(fs.readFileSync(video, 'utf8')).toBe('video-bytes');
   });
 });

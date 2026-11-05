@@ -9,7 +9,9 @@ import type {
   ScanSummary,
   VideoChangeResult,
   VideoCounts,
-  VideoListItem,
+  VideoListPage,
+  VideoQuery,
+  CatalogFacets,
 } from '../shared/api';
 import { createScanDeps } from './indexer/fsDeps';
 import { createRepository, type CatalogRepository } from './indexer/repository';
@@ -44,8 +46,18 @@ export function createLibraryService(
       return repo.listLibrarySummaries();
     },
 
-    listVideos(options?: { excluded?: boolean }): VideoListItem[] {
-      return repo.listVideoSummaries(options?.excluded ?? false);
+    listVideos(options?: VideoQuery): VideoListPage {
+      const query = { ...options };
+      if (query.limit == null) query.limit = 48;
+      if (query.offset == null) query.offset = 0;
+      return {
+        items: repo.listVideoSummaries(query),
+        total: repo.countVideoSummaries(query),
+      };
+    },
+
+    listFacets(options?: { excluded?: boolean }): CatalogFacets {
+      return repo.listFacets(options?.excluded ?? false);
     },
 
     countVideos(): VideoCounts {
