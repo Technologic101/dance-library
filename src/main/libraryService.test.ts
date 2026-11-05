@@ -34,6 +34,13 @@ function idleDeps(): ScanDeps {
     },
     exists: (filePath) => fs.existsSync(filePath),
     readDirectory: async () => true,
+    directoryHasEntries(dir) {
+      try {
+        return fs.readdirSync(dir).length > 0;
+      } catch {
+        return false;
+      }
+    },
     walkVideos: async function* () {},
     stat: async () => {
       throw new Error('no files');

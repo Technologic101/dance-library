@@ -63,6 +63,13 @@ function fakeDeps(input: {
     isDirectory: (filePath) => input.directories.includes(filePath),
     exists: (filePath) => input.directories.includes(filePath) || fileMap.has(filePath),
     readDirectory: async () => input.readable !== false,
+    directoryHasEntries(dir) {
+      const prefix = dir.endsWith('\\') ? dir : `${dir}\\`;
+      return (
+        input.files.some((file) => file.path.startsWith(prefix)) ||
+        input.directories.some((child) => child.startsWith(prefix))
+      );
+    },
     walkVideos: async function* (root) {
       const prefix = root.endsWith('\\') ? root : `${root}\\`;
       for (const file of input.files) {

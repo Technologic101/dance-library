@@ -33,6 +33,13 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
       }
     },
     readDirectory: directoryReadable,
+    directoryHasEntries(dir) {
+      try {
+        return fs.readdirSync(dir).length > 0;
+      } catch {
+        return false;
+      }
+    },
     walkVideos,
     walkLibrary,
     stat: async (filePath) => statIndexedFile(filePath, mounts ?? (mounts = await listMounts())),

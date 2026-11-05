@@ -46,6 +46,13 @@ function largeDeps(input: { files: FakeFile[]; directories: string[]; failHash?:
     isDirectory: (filePath) => input.directories.includes(filePath),
     exists: (filePath) => input.directories.includes(filePath) || fileMap.has(filePath),
     readDirectory: async () => true,
+    directoryHasEntries(dir) {
+      const prefix = dir.endsWith('\\') ? dir : `${dir}\\`;
+      return (
+        input.files.some((file) => file.path.startsWith(prefix)) ||
+        input.directories.some((child) => child.startsWith(prefix))
+      );
+    },
     walkVideos: async function* (root) {
       const prefix = root.endsWith('\\') ? root : `${root}\\`;
       for (const file of input.files) {
@@ -588,5 +595,64 @@ describe('review regressions', () => {
       path: original.path,
       presence: 'present',
     });
+  });
+
+  it('stays online and relinks when sampled files moved inside the library', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const first = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+    db.prepare(`UPDATE videos SET title = 'Warmup' WHERE id = ?`).run(id);
+    db.prepare(
+      `INSERT INTO videos (id, created_at, updated_at) VALUES ('gone-video', 't', 't')`,
+    ).run();
+    for (let index = 0; index < 6; index += 1) {
+      db.prepare(
+        `INSERT INTO video_locations (
+           id, video_id, library_id, path, filename, presence, last_scan_generation, created_at, updated_at
+         ) VALUES (?, 'gone-video', 'lib', ?, 'old.mp4', 'missing', 0, 't', 't')`,
+      ).run(`missing-${index}`, `D:\\dance\\gone-${index}.mp4`);
+    }
+
+    const moved: FakeFile = { ...original, path: 'D:\\dance\\sorted\\clip.mp4' };
+    const second = largeDeps({
+      directories: ['D:\\dance', 'D:\\dance\\sorted'],
+      files: [moved],
+    });
+    second.deps.listMounts = async () => [];
+    second.thumbs.add(`${id}.jpg`);
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+    expect(summary.offline).toBe(0);
+    expect(summary.missing).toBe(0);
+    expect(db.prepare(`SELECT availability FROM libraries`).get()).toEqual({
+      availability: 'online',
+    });
+    expect(db.prepare(`SELECT title FROM videos WHERE id = ?`).get(id)).toEqual({
+      title: 'Warmup',
+    });
+    expect(
+      db.prepare(`SELECT path, presence FROM video_locations WHERE video_id = ?`).get(id),
+    ).toEqual({ path: moved.path, presence: 'present' });
+  });
+
+  it('does not rewrite a same-library hard link that is not a case alias', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const archived: FakeFile = { ...original, path: 'D:\\dance\\Archive\\clip.mp4', fileId: '77' };
+    const linked: FakeFile = { ...original, path: 'D:\\dance\\2026\\clip.mp4', fileId: '77' };
+    const roots = ['D:\\dance', 'D:\\dance\\Archive', 'D:\\dance\\2026'];
+    const first = largeDeps({ directories: roots, files: [archived] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+    const second = largeDeps({ directories: roots, files: [linked, archived] });
+    second.thumbs.add(`${id}.jpg`);
+    await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+    const locations = db.prepare(`SELECT path FROM video_locations ORDER BY path`).all() as {
+      path: string;
+    }[];
+    expect(locations.map((row) => row.path).sort()).toEqual([archived.path, linked.path].sort());
   });
 });

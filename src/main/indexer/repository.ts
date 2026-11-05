@@ -274,6 +274,17 @@ export function createRepository(db: Database.Database) {
         .all(libraryId) as LocationRecord[];
     },
 
+    samplePresentLocations(libraryId: string, limit: number): LocationRecord[] {
+      return db
+        .prepare(
+          `${LOCATION_SELECT}
+           WHERE library_id = ? AND presence = 'present'
+           ORDER BY last_scan_generation DESC, updated_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(libraryId, limit) as LocationRecord[];
+    },
+
     resolveVideoId(id: string): string {
       let current = id;
       const lookup = db.prepare(`SELECT to_id AS toId FROM video_redirects WHERE from_id = ?`);

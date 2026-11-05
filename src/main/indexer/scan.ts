@@ -43,6 +43,8 @@ export type ScanDeps = {
   isDirectory: (filePath: string) => boolean;
   exists: (filePath: string) => boolean;
   readDirectory: (dir: string) => Promise<boolean>;
+  /** True when the directory contains any file or child folder. */
+  directoryHasEntries: (dir: string) => boolean;
   walkVideos: (root: string) => AsyncIterable<string>;
   /** When set, unreadable directories are not treated as missing files. */
   walkLibrary?: (root: string) => Promise<{
@@ -140,7 +142,7 @@ export async function scanLibrary(
     deps.isDirectory(library.path) &&
     (resolved.availability === 'offline' || mounts.length === 0)
   ) {
-    const sample = repo.locationsForLibrary(library.id).slice(0, 5);
+    const sample = repo.samplePresentLocations(library.id, 20);
     let matchedSample = 0;
     for (const location of sample) {
       if (!deps.exists(location.path)) continue;
@@ -157,9 +159,11 @@ export async function scanLibrary(
       volumeId: isStableVolumeId(library.volumeId) ? library.volumeId : null,
       volumeRelPath: library.volumeRelPath,
     };
-    // An empty mount listing is "unknown", not proof the disk is attached.
-    // A leftover mount-point directory must still have its files.
-    if (mounts.length === 0 && !filesStillThere) {
+    // An empty mount listing is unknown. Go offline only when the folder itself
+    // is empty and the catalog's recent files are gone: a leftover mount point.
+    // A folder that still has entries is reorganized, not unplugged.
+    const rootEmpty = !deps.directoryHasEntries(library.path);
+    if (mounts.length === 0 && !filesStillThere && rootEmpty) {
       resolved = { availability: 'offline', ...savedVolume };
     } else if (resolved.availability === 'offline' && filesStillThere) {
       resolved = { availability: 'online', ...savedVolume };
@@ -575,6 +579,7 @@ async function identityLocation(
       const alias = await deps.stat(row.path);
       if (
         row.libraryId === libraryId &&
+        isCaseAlias(row.path, filePath) &&
         alias.fileId &&
         alias.fileId === stat.fileId &&
         alias.volumeId === stat.volumeId &&
@@ -587,6 +592,11 @@ async function identityLocation(
     }
   }
   return null;
+}
+
+function isCaseAlias(stored: string, current: string): boolean {
+  const fold = (value: string) => value.replaceAll('\\', '/').normalize('NFC').toLowerCase();
+  return fold(stored) === fold(current);
 }
 
 function claimGoneLocation(
