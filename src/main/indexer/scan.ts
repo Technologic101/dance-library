@@ -136,7 +136,10 @@ export async function scanLibrary(
     existsDir: (candidate) => deps.isDirectory(candidate),
     describe: (candidate) => deps.describePath(candidate, mounts),
   });
-  if (resolved.availability === 'offline' && deps.isDirectory(library.path)) {
+  if (
+    deps.isDirectory(library.path) &&
+    (resolved.availability === 'offline' || mounts.length === 0)
+  ) {
     const sample = repo.locationsForLibrary(library.id).slice(0, 5);
     let matchedSample = 0;
     for (const location of sample) {
@@ -149,13 +152,17 @@ export async function scanLibrary(
       }
     }
     const filesStillThere = sample.length === 0 || matchedSample > 0;
-    if (mounts.length === 0 || filesStillThere) {
-      resolved = {
-        availability: 'online',
-        path: library.path,
-        volumeId: isStableVolumeId(library.volumeId) ? library.volumeId : null,
-        volumeRelPath: library.volumeRelPath,
-      };
+    const savedVolume = {
+      path: library.path,
+      volumeId: isStableVolumeId(library.volumeId) ? library.volumeId : null,
+      volumeRelPath: library.volumeRelPath,
+    };
+    // An empty mount listing is "unknown", not proof the disk is attached.
+    // A leftover mount-point directory must still have its files.
+    if (mounts.length === 0 && !filesStillThere) {
+      resolved = { availability: 'offline', ...savedVolume };
+    } else if (resolved.availability === 'offline' && filesStillThere) {
+      resolved = { availability: 'online', ...savedVolume };
     }
   }
   const now = deps.now();
@@ -274,7 +281,15 @@ async function indexFile(
   let location = repo.findLocationByPath(input.filePath);
   if (location && input.seen.has(location.id)) location = null;
   if (!location && stat.fileId && stat.volumeId && stat.fileIdStable !== false) {
-    location = await identityLocation(repo, deps, stat, input.filePath, input.seen, null);
+    location = await identityLocation(
+      repo,
+      deps,
+      stat,
+      input.filePath,
+      input.seen,
+      null,
+      input.libraryId,
+    );
   }
 
   if (stat.size === 0) {
@@ -306,7 +321,15 @@ async function indexFile(
   }
 
   if (!location && contentHash && stat.fileId && stat.volumeId && stat.fileIdStable !== false) {
-    location = await identityLocation(repo, deps, stat, input.filePath, input.seen, contentHash);
+    location = await identityLocation(
+      repo,
+      deps,
+      stat,
+      input.filePath,
+      input.seen,
+      contentHash,
+      input.libraryId,
+    );
   }
 
   const boundVideo = location ? repo.getVideo(location.videoId) : currentVideo;
@@ -460,7 +483,10 @@ async function planContentMatch(
     for (const candidate of candidates) add(input.hash, candidate);
   } else {
     for (const candidate of candidates) {
-      const known = await readCandidateFullHash(repo, deps, candidate);
+      const known = await readCandidateFullHash(repo, deps, candidate, {
+        filePath: input.filePath,
+        fullHash,
+      });
       if (known) add(known, candidate);
     }
     if (fullHash) {
@@ -486,9 +512,14 @@ async function readCandidateFullHash(
   repo: CatalogRepository,
   deps: ScanDeps,
   video: VideoRecord,
+  known?: { filePath: string; fullHash: string | null },
 ): Promise<string | null> {
   if (video.fullHash) return video.fullHash;
   for (const location of repo.locationsForVideo(video.id)) {
+    if (known && pathsEqual(location.path, known.filePath)) {
+      if (known.fullHash) return known.fullHash;
+      continue;
+    }
     if (!deps.exists(location.path)) continue;
     let stat: IndexedStat;
     try {
@@ -523,6 +554,7 @@ async function identityLocation(
   filePath: string,
   seen: ReadonlySet<string>,
   contentHash: string | null,
+  libraryId: string,
 ): Promise<LocationRecord | null> {
   if (!stat.volumeId || !stat.fileId) return null;
   const rows = repo.findLocationsByIdentity(stat.volumeId, stat.fileId);
@@ -541,7 +573,15 @@ async function identityLocation(
     if (seen.has(row.id) || pathsEqual(row.path, filePath)) continue;
     try {
       const alias = await deps.stat(row.path);
-      if (alias.fileId && alias.fileId === stat.fileId) return row;
+      if (
+        row.libraryId === libraryId &&
+        alias.fileId &&
+        alias.fileId === stat.fileId &&
+        alias.volumeId === stat.volumeId &&
+        alias.size === stat.size
+      ) {
+        return row;
+      }
     } catch {
       // The stored path is not a readable alias of this file.
     }
