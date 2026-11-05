@@ -15,6 +15,7 @@ import {
   dropMissingFacets,
   emptyBrowseFilters,
   filtersAreActive,
+  pageAfterShrink,
   toVideoQuery,
   videoPageSize,
   videoTypeLabels,
@@ -62,14 +63,14 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const notified = useRef(false);
   const listSeq = useRef(0);
   const debouncedText = useDebounced(filters.text, 150);
+  const filterKey = `${catalogView}|${debouncedText}|${filters.capturedFrom}|${filters.capturedTo}|${filters.videoType}|${filters.styleId}|${filters.instructorId}|${filters.level}|${filters.tagId}|${filters.duration}|${filters.libraryId}|${filters.favoriteOnly}|${filters.sort}`;
   const query = useMemo(() => {
     const next = toVideoQuery({ ...filters, text: debouncedText }, catalogView === 'excluded');
     next.offset = page * videoPageSize;
     return next;
-  }, [filters, debouncedText, catalogView, page]);
-  const queryRef = useRef(query);
-  queryRef.current = query;
-  const filterKey = `${catalogView}|${debouncedText}|${filters.capturedFrom}|${filters.capturedTo}|${filters.videoType}|${filters.styleId}|${filters.instructorId}|${filters.level}|${filters.tagId}|${filters.duration}|${filters.libraryId}|${filters.favoriteOnly}|${filters.sort}`;
+    // filterKey omits the live search text so a keystroke does not query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, page]);
 
   useEffect(() => {
     let active = true;
@@ -85,6 +86,9 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       active = false;
     };
   }, [api]);
+
+  const queryRef = useRef(query);
+  queryRef.current = query;
 
   useEffect(() => {
     setPage(0);
@@ -122,12 +126,14 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         setMatchTotal(result.total);
         setLoadError(null);
         setSelected(new Set());
+        const nextPage = pageAfterShrink(page, result.total, videoPageSize);
+        if (result.items.length === 0 && nextPage != null) setPage(nextPage);
       })
       .catch((caught: unknown) => {
         if (seq !== listSeq.current) return;
         setLoadError(messageOf(caught));
       });
-  }, [api, query]);
+  }, [api, query, page]);
 
   useEffect(() => {
     return api.onScanProgress((next) => setProgress(next));
@@ -150,15 +156,17 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       api.listFacets({ excluded: current.excluded === true }),
       api.listVideos(current),
     ]);
-    if (seq !== listSeq.current) return;
     setLibraries(nextLibraries);
     setCounts(nextCounts);
     setFacets(nextFacets);
     setFilters((filtersNow) => dropMissingFacets(filtersNow, nextFacets));
+    if (seq !== listSeq.current) return;
     setVideos(pageResult.items);
     setMatchTotal(pageResult.total);
     setLoadError(null);
     setSelected(new Set());
+    const nextPage = pageAfterShrink(page, pageResult.total, videoPageSize);
+    if (pageResult.items.length === 0 && nextPage != null) setPage(nextPage);
   }
 
   async function runTask(task: () => Promise<void>): Promise<void> {

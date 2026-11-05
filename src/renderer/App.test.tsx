@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppHealth, CatalogFacets, LibrarySummary, VideoListItem } from '../shared/api';
 import { formatVideoMeta } from '../shared/format';
@@ -192,6 +192,44 @@ describe('App', () => {
     await waitFor(() => expect(excludeVideos).toHaveBeenCalledWith(['vid-1', 'vid-2']));
   });
 
+  it('applies a library refresh even when a newer search replaces the page', async () => {
+    let resolveLibraries: (libraries: LibrarySummary[]) => void = () => {};
+    let libraryCalls = 0;
+    api({
+      listLibraries: () => {
+        libraryCalls += 1;
+        if (libraryCalls === 1) return Promise.resolve([library]);
+        return new Promise((resolve) => {
+          resolveLibraries = resolve;
+        });
+      },
+      listVideos: async (query) => {
+        if (query?.text === 'bolero') return { items: [present], total: 1 };
+        return { items: [present, missing], total: 2 };
+      },
+      scanLibrary: async () => ({
+        libraries: 1,
+        discovered: 2,
+        added: 0,
+        updated: 0,
+        unchanged: 2,
+        linked: 0,
+        missing: 0,
+        offline: 0,
+        errors: 0,
+      }),
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Rescan dance' }));
+    await waitFor(() => expect(libraryCalls).toBe(2));
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
+      target: { value: 'bolero' },
+    });
+    expect(await screen.findByRole('heading', { name: 'lesson-basic.mp4' })).toBeTruthy();
+    resolveLibraries([{ ...library, label: 'renamed', videoCount: 9 }]);
+    expect(await screen.findByRole('button', { name: 'Rescan renamed' })).toBeTruthy();
+  });
+
   it('rescans a folder', async () => {
     const scanLibrary = vi.fn(async () => ({
       libraries: 1,
@@ -209,6 +247,29 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.click(screen.getByRole('button', { name: 'Rescan dance' }));
     await waitFor(() => expect(scanLibrary).toHaveBeenCalledWith('lib'));
+  });
+
+  it('waits to search until typing pauses', async () => {
+    vi.useFakeTimers();
+    const listVideos = vi.fn(async () => ({ items: [present], total: 1 }));
+    api({ listVideos });
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const before = listVideos.mock.calls.length;
+    expect(before).toBeGreaterThan(0);
+    const box = screen.getByRole('searchbox', { name: 'Search' });
+    for (const value of ['b', 'bo', 'bol', 'bole', 'bolero']) {
+      fireEvent.change(box, { target: { value } });
+    }
+    expect(listVideos.mock.calls.length).toBe(before);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    expect(listVideos.mock.calls.length).toBe(before + 1);
+    expect(listVideos).toHaveBeenLastCalledWith(expect.objectContaining({ text: 'bolero' }));
+    vi.useRealTimers();
   });
 
   it('filters the catalog from the search box', async () => {
