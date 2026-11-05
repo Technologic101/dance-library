@@ -487,4 +487,106 @@ describe('review regressions', () => {
       .get() as { presence: string };
     expect(missing.presence).toBe('missing');
   });
+
+  it('keeps both locations when two libraries share a hard link (N6)', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    db.prepare(
+      `INSERT INTO libraries (id, path, label, created_at, updated_at)
+       VALUES ('lib', 'D:\\dance', 'dance', 't', 't'),
+              ('backup', 'D:\\dance-backup', 'dance-backup', 't', 't')`,
+    ).run();
+    const primary: FakeFile = { ...original, path: 'D:\\dance\\clip.mp4', fileId: '77' };
+    const link: FakeFile = { ...original, path: 'D:\\dance-backup\\clip.mp4', fileId: '77' };
+    const roots = ['D:\\dance', 'D:\\dance-backup'];
+    const first = largeDeps({ directories: roots, files: [primary, link] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const videoId = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+
+    const second = largeDeps({ directories: roots, files: [primary, link] });
+    second.thumbs.add(`${videoId}.jpg`);
+    await scanLibrary(db, 'backup', second.deps, { thumbsDir: tempDir() });
+    const third = largeDeps({ directories: roots, files: [primary, link] });
+    third.thumbs.add(`${videoId}.jpg`);
+    await scanLibrary(db, 'lib', third.deps, { thumbsDir: tempDir() });
+
+    const videos = db.prepare(`SELECT id FROM videos`).all();
+    expect(videos).toEqual([{ id: videoId }]);
+    const locations = db
+      .prepare(`SELECT library_id, path, presence FROM video_locations ORDER BY path`)
+      .all();
+    expect(locations).toEqual([
+      { library_id: 'backup', path: 'D:\\dance-backup\\clip.mp4', presence: 'present' },
+      { library_id: 'lib', path: 'D:\\dance\\clip.mp4', presence: 'present' },
+    ]);
+  });
+
+  it('does not read the bound file again when retrying its full hash', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const failed = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    failed.deps.fullHash = async () => {
+      throw new Error('EIO');
+    };
+    await scanLibrary(db, 'lib', failed.deps, { thumbsDir: tempDir() });
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+
+    let reads = 0;
+    const recovered = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    recovered.thumbs.add(`${id}.jpg`);
+    recovered.deps.fullHash = async () => {
+      reads += 1;
+      return original.fullHash;
+    };
+    await scanLibrary(db, 'lib', recovered.deps, { thumbsDir: tempDir() });
+    expect(reads).toBe(1);
+    expect(db.prepare(`SELECT full_hash AS fullHash FROM videos`).get()).toEqual({
+      fullHash: 'full-same',
+    });
+  });
+
+  it('stays offline when the mount listing is empty and the files are gone', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const first = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+
+    const unplugged = largeDeps({ directories: ['D:\\dance'], files: [] });
+    unplugged.deps.listMounts = async () => [];
+    const summary = await scanLibrary(db, 'lib', unplugged.deps, { thumbsDir: tempDir() });
+    expect(summary.offline).toBe(1);
+    expect(summary.missing).toBe(0);
+    expect(summary.discovered).toBe(0);
+    expect(db.prepare(`SELECT availability FROM libraries`).get()).toEqual({
+      availability: 'offline',
+    });
+    expect(db.prepare(`SELECT presence FROM video_locations`).get()).toEqual({
+      presence: 'present',
+    });
+  });
+
+  it('stays online when the mount listing is empty but the files are still there', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const first = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+
+    const stillThere = largeDeps({ directories: ['D:\\dance'], files: [original] });
+    stillThere.deps.listMounts = async () => [];
+    stillThere.thumbs.add(`${id}.jpg`);
+    const summary = await scanLibrary(db, 'lib', stillThere.deps, { thumbsDir: tempDir() });
+    expect(summary.offline).toBe(0);
+    expect(summary.missing).toBe(0);
+    expect(db.prepare(`SELECT availability FROM libraries`).get()).toEqual({
+      availability: 'online',
+    });
+    expect(db.prepare(`SELECT path, presence FROM video_locations`).get()).toEqual({
+      path: original.path,
+      presence: 'present',
+    });
+  });
 });
