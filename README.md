@@ -2,7 +2,7 @@
 
 A small desktop app for cataloging a personal dance video library (zouk, kizomba and other social styles): lessons, post-lesson demos, social dances and performances. It indexes videos where they already live, on a local or external drive and in a Google Photos Takeout export, helps consolidate them into one library, and gives a fast way to find, tag and practice with them. Intended to be open source and installable by anyone, with no Python, Node or other setup required.
 
-> Status: Phase 0 skeleton is implemented. An unsigned build opens a window and reports the app version, SQLite catalog health, and bundled ffprobe version. Phases 1–6 are not built. Auto-update is not active. The sections below are still the plan.
+> Status: Phase 1 indexes source folders. A video is one catalog item identified by its content, with zero or more file locations. Matching files are extra locations, not new items, and are never deleted. Items that are not dance videos can be excluded and restored; exclusion survives a rescan. Phases 2–6 are not built. Auto-update is not active. The sections below are still the plan.
 
 ## Developer setup
 
@@ -74,7 +74,7 @@ Generic photo tools (Immich was considered) handle import and search well, but t
 
 ## Planned features (v1)
 
-1. **Indexer** - recursively scans configured source folders (backup drive and extracted Takeout). Records path, filename, size, a fast partial content hash, capture date (from video metadata, Takeout JSON sidecars or filename patterns, falling back to file time), duration, resolution and a thumbnail. Detects duplicates across sources. Re-scans are incremental.
+1. **Indexer** - recursively scans configured source folders (backup drive and extracted Takeout). Records size, a fast partial content hash, capture date (from video metadata, Takeout JSON sidecars or filename patterns, falling back to file time), duration, resolution and a thumbnail. The same content is one catalog item with one or more file locations, so a duplicate file is another location rather than another item. A partial hash proposes the match. A full-content hash confirms it when the partial hash does not already cover the whole file, and that full hash is stored when a large file is first indexed so a later move can still be recognized if the old copy is gone. The user can exclude an item without deleting the file, and a later scan leaves it excluded until the user restores it. Re-scans are incremental.
 2. **Editable metadata** - video type (lesson, demo, social dance, performance), dance style, instructor(s), level, event/workshop, free tags, notes, rating and favorite, with bulk edit. A lesson and its demo from the same class can be linked. Tag suggestions come from folder names, Takeout album names and filenames, and the user confirms them.
 3. **Browse and search** - thumbnail grid and list views, a search box, and filters for date range, video type, style, instructor, level, tags, duration, source and favorites. Pick several videos into a practice playlist.
 4. **Practice player** - speed control (0.25x to 2x), mirror toggle, A-B loop, and searchable timestamp bookmarks inside a video ("basic step at 3:12").
@@ -129,7 +129,7 @@ Each phase ends with something runnable and is tested against a small set of sam
 
 **Phase 0 - Skeleton.** Electron Forge + Vite + React + TypeScript project; secure main/renderer split with a typed preload API; better-sqlite3 wired in and rebuilt for Electron; bundled ffmpeg/ffprobe; schema migrations; lint, unit tests and CI on GitHub Actions building Windows and macOS. _Done when:_ an unsigned installer opens an empty window on both platforms.
 
-**Phase 1 - Library and indexer.** Add or remove source folders; background scan with progress; per-video size, partial hash, duration, resolution, capture date (metadata, filename patterns, file time) and thumbnail; incremental re-scans; missing-file handling when a drive is unplugged. Source files are read-only. _Done when:_ a few thousand sample files index and re-scan quickly.
+**Phase 1 - Library and indexer.** Add or remove source folders; background scan with progress; one catalog item per distinct video, with every copy stored as a location; partial hash plus a full-content hash when a possible duplicate needs confirming; duration, resolution, capture date (metadata, filename patterns, file time) and thumbnail; exclude and restore items that should stay out of the library; incremental re-scans; a missing file or unplugged drive marks that location unavailable and keeps the video. Source files are read-only. _Done when:_ a few thousand sample files index and re-scan quickly.
 
 **Phase 2 - Browse and search.** Thumbnail grid and list, full-text search, filters (date range, type, style, instructor, level, tags, duration, source, favorites), sorting. _Done when:_ filtering a large catalog feels instant.
 
@@ -137,7 +137,7 @@ Each phase ends with something runnable and is tested against a small set of sam
 
 **Phase 4 - Practice player.** Playback from source through a custom file protocol; speed 0.25x to 2x; mirror; A-B loop; frame step; searchable timestamp bookmarks; practice playlists. _Done when:_ smooth slow and mirrored playback from an external drive.
 
-**Phase 5 - Google Photos Takeout and consolidation.** Import extracted Takeout (one zip at a time), reading JSON sidecars for dates and albums; content-based duplicate detection across sources; consolidation report (both, drive only, Google only); approved copy of Google-only videos to a chosen folder with a log. Never deletes. _Done when:_ a sample Takeout reconciles correctly against a sample drive.
+**Phase 5 - Google Photos Takeout and consolidation.** Import extracted Takeout (one zip at a time), reading JSON sidecars for dates and albums. The catalog already groups identical files as one video with several locations. The consolidation report lists videos found in both places, only on the drive, and only in Google, so only the Google-only ones need copying to the drive. Copies happen only after approval. The app never deletes. _Done when:_ a sample Takeout reconciles correctly against a sample drive.
 
 **Phase 6 - Suggestions, export and release.** Rule-based suggestions from filenames, folders and albums with one-click accept or dismiss; CSV and JSON export; auto-update via GitHub Releases; README, screenshots and license for open-sourcing. _Done when:_ v1.0 is published as an unsigned release.
 
