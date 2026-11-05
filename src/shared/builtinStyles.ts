@@ -1,0 +1,65 @@
+/** Built-in dance styles. People can add their own later; these are never removed by a scan. */
+export const builtinStyleNames = [
+  'Afrobeat',
+  'Argentine Tango',
+  'Bachata',
+  'Bachata Sensual',
+  'Ballet',
+  'Balboa',
+  'Blues',
+  'Bolero',
+  'Bossa Nova',
+  'Breaking',
+  'Cha-cha',
+  'Charleston',
+  'Collegiate Shag',
+  'Commercial',
+  'Contemporary',
+  'Cumbia',
+  'East Coast Swing',
+  'Foxtrot',
+  'Forró',
+  'Fusion',
+  'Gafieira',
+  'Heels',
+  'Hip Hop',
+  'House',
+  'Jazz',
+  'Kizomba',
+  'Kuduro',
+  'Lambada',
+  'Lindy Hop',
+  'Locking',
+  'Mambo',
+  'Merengue',
+  'Modern',
+  'Passada',
+  'Popping',
+  'Quickstep',
+  'Reggaeton',
+  'Rumba',
+  'Salsa',
+  'Samba',
+  'Samba Rock',
+  'Semba',
+  'Soltinho',
+  'Tarraxinha',
+  'Tango',
+  'Urban Kiz',
+  'Viennese Waltz',
+  'Vogue',
+  'Waacking',
+  'Waltz',
+  'West Coast Swing',
+  'Zouk',
+] as const;
+
+export function builtinStyleId(name: string): string {
+  const slug = name
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `builtin:${slug}`;
+}

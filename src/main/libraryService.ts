@@ -10,6 +10,8 @@ import type {
   VideoChangeResult,
   VideoCounts,
   VideoListItem,
+  VideoQuery,
+  CatalogFacets,
 } from '../shared/api';
 import { createScanDeps } from './indexer/fsDeps';
 import { createRepository, type CatalogRepository } from './indexer/repository';
@@ -44,8 +46,12 @@ export function createLibraryService(
       return repo.listLibrarySummaries();
     },
 
-    listVideos(options?: { excluded?: boolean }): VideoListItem[] {
-      return repo.listVideoSummaries(options?.excluded ?? false);
+    listVideos(options?: VideoQuery): VideoListItem[] {
+      return repo.listVideoSummaries(options ?? {});
+    },
+
+    listFacets(): CatalogFacets {
+      return repo.listFacets();
     },
 
     countVideos(): VideoCounts {

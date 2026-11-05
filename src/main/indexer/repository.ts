@@ -3,10 +3,15 @@ import { pathKey } from './paths';
 import {
   thumbnailUrl,
   type CaptureDateSource,
+  type CatalogFacets,
+  type Level,
   type LibrarySummary,
   type VideoListItem,
   type VideoLocationItem,
+  type VideoQuery,
+  type VideoType,
 } from '../../shared/api';
+import { videoListQuery } from './videoQuery';
 
 export type LibraryRecord = {
   id: string;
@@ -526,33 +531,27 @@ export function createRepository(db: Database.Database) {
       return { visible: row.visible ?? 0, excluded: row.excluded ?? 0 };
     },
 
-    listVideoSummaries(excluded: boolean): VideoListItem[] {
-      const rows = db
-        .prepare(
-          `SELECT
-             v.id, v.title, v.size_bytes AS sizeBytes, v.duration_ms AS durationMs,
-             v.width, v.height, v.video_codec AS videoCodec, v.captured_at AS capturedAt,
-             v.captured_at_source AS capturedAtSource, v.metadata_error AS metadataError,
-             v.thumbnail_file AS thumbnailFile, v.excluded,
-             json_group_array(
-               CASE WHEN loc.id IS NULL THEN NULL ELSE json_object(
-                 'id', loc.id,
-                 'libraryId', loc.library_id,
-                 'libraryLabel', lib.label,
-                 'path', loc.path,
-                 'filename', loc.filename,
-                 'presence', loc.presence
-               ) END
-             ) AS locationsJson
-           FROM videos v
-           LEFT JOIN video_locations loc ON loc.video_id = v.id
-           LEFT JOIN libraries lib ON lib.id = loc.library_id
-           WHERE v.excluded = ?
-           GROUP BY v.id
-           ORDER BY COALESCE(NULLIF(TRIM(v.title), ''), v.created_at)`,
-        )
-        .all(excluded ? 1 : 0) as RawVideoRow[];
+    listVideoSummaries(query: VideoQuery = {}): VideoListItem[] {
+      const { sql, params } = videoListQuery(query);
+      const rows = db.prepare(sql).all(params) as RawVideoRow[];
       return rows.map(toListItem);
+    },
+
+    listFacets(): CatalogFacets {
+      return {
+        styles: db
+          .prepare(`SELECT id, name FROM styles ORDER BY name COLLATE NOCASE`)
+          .all() as CatalogFacets['styles'],
+        instructors: db
+          .prepare(`SELECT id, name FROM instructors ORDER BY name COLLATE NOCASE`)
+          .all() as CatalogFacets['instructors'],
+        tags: db
+          .prepare(`SELECT id, name FROM tags ORDER BY name COLLATE NOCASE`)
+          .all() as CatalogFacets['tags'],
+        libraries: db
+          .prepare(`SELECT id, label FROM libraries ORDER BY label COLLATE NOCASE`)
+          .all() as CatalogFacets['libraries'],
+      };
     },
 
     excludeVideos(ids: readonly string[], now: string): number {
@@ -601,6 +600,13 @@ type RawVideoRow = {
   metadataError: string | null;
   thumbnailFile: string | null;
   excluded: number;
+  videoType: VideoType | null;
+  level: Level | null;
+  favorite: number;
+  styleName: string | null;
+  displayTitle: string;
+  instructorsJson: string;
+  tagsJson: string;
   locationsJson: string;
 };
 
@@ -616,7 +622,7 @@ function toListItem(row: RawVideoRow): VideoListItem {
   return {
     id: row.id,
     title,
-    displayTitle: title ?? primary?.filename ?? 'Untitled',
+    displayTitle: title ?? primary?.filename ?? row.displayTitle ?? 'Untitled',
     sizeBytes: row.sizeBytes,
     durationMs: row.durationMs,
     width: row.width,
@@ -628,6 +634,18 @@ function toListItem(row: RawVideoRow): VideoListItem {
     metadataError: row.metadataError,
     thumbnailUrl: thumbnailUrl(row.thumbnailFile),
     excluded: row.excluded === 1,
+    videoType: row.videoType,
+    styleName: row.styleName,
+    level: row.level,
+    favorite: row.favorite === 1,
+    instructors: names(row.instructorsJson),
+    tags: names(row.tagsJson),
     locations,
   };
+}
+
+function names(json: string): string[] {
+  const parsed = JSON.parse(json) as unknown;
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
 }

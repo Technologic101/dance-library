@@ -7,6 +7,7 @@ const api: DanceLibraryApi = {
   listLibraries: () => ipcRenderer.invoke(IpcChannels.listLibraries),
   listVideos: (options) =>
     ipcRenderer.invoke(IpcChannels.listVideos, options ?? { excluded: false }),
+  listFacets: () => ipcRenderer.invoke(IpcChannels.listFacets),
   countVideos: () => ipcRenderer.invoke(IpcChannels.countVideos),
   addLibraries: () => ipcRenderer.invoke(IpcChannels.addLibraries),
   removeLibrary: (libraryId) => ipcRenderer.invoke(IpcChannels.removeLibrary, libraryId),

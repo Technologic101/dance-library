@@ -21,6 +21,7 @@ import {
   type VideoCounts,
   type VideoListItem,
 } from '../shared/api';
+import { parseVideoQuery } from '../shared/search';
 import { collectHealth } from './health';
 import { createLibraryService, type LibraryService } from './libraryService';
 import { catalogPath, openCatalog } from './db/catalog';
@@ -108,13 +109,9 @@ function registerIpc(service: LibraryService): void {
 
   ipcMain.handle(IpcChannels.listLibraries, () => service.listLibraries());
   ipcMain.handle(IpcChannels.listVideos, (_event, options: unknown): VideoListItem[] => {
-    const excluded =
-      typeof options === 'object' &&
-      options !== null &&
-      'excluded' in options &&
-      options.excluded === true;
-    return service.listVideos({ excluded });
+    return service.listVideos(parseVideoQuery(options));
   });
+  ipcMain.handle(IpcChannels.listFacets, () => service.listFacets());
   ipcMain.handle(IpcChannels.countVideos, (): VideoCounts => service.countVideos());
   ipcMain.handle(IpcChannels.excludeVideos, (_event, ids: unknown): Promise<VideoChangeResult> => {
     return service.excludeVideos(stringIds(ids));

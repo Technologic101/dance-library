@@ -2,11 +2,11 @@
 
 A small desktop app for cataloging a personal dance video library (zouk, kizomba and other social styles): lessons, post-lesson demos, social dances and performances. It indexes videos where they already live, on a local or external drive and in a Google Photos Takeout export, helps consolidate them into one library, and gives a fast way to find, tag and practice with them. Intended to be open source and installable by anyone, with no Python, Node or other setup required.
 
-> Status: Phase 1 indexes source folders. A video is one catalog item identified by its content, with zero or more file locations. Matching files are extra locations, not new items, and are never deleted. Items that are not dance videos can be excluded and restored; exclusion survives a rescan. Phases 2–6 are not built. Auto-update is not active. The sections below are still the plan.
+> Status: Phases 0–2 are implemented. Phase 1 indexes source folders into one catalog item per video, with extra copies kept as locations. People can exclude items, and exclusion survives a rescan. Phase 2 browses that catalog in a thumbnail grid or list, with full-text search and filters. Phases 3–6 are not built. Auto-update is not active. The sections below are still the plan for the remaining phases.
 
 ## Developer setup
 
-Phase 0 is an Electron app. People who install a packaged build do not need Node. Development uses Node.js 22 or newer and npm.
+Dance Library is an Electron app. People who install a packaged build do not need Node. Development uses Node.js 22 or newer and npm.
 
 ```bash
 npm ci
@@ -131,7 +131,7 @@ Each phase ends with something runnable and is tested against a small set of sam
 
 **Phase 1 - Library and indexer.** Add or remove source folders; background scan with progress; one catalog item per distinct video, with every copy stored as a location; partial hash plus a full-content hash when a possible duplicate needs confirming; duration, resolution, capture date (metadata, filename patterns, file time) and thumbnail; exclude and restore items that should stay out of the library; incremental re-scans; a missing file or unplugged drive marks that location unavailable and keeps the video. Source files are read-only. _Done when:_ a few thousand sample files index and re-scan quickly.
 
-**Phase 2 - Browse and search.** Thumbnail grid and list, full-text search, filters (date range, type, style, instructor, level, tags, duration, source, favorites), sorting. _Done when:_ filtering a large catalog feels instant.
+**Phase 2 - Browse and search.** Thumbnail grid and list, full-text search over titles, notes, tags, and file names, filters (date range, type, style, instructor, level, tags, duration, source, favorites), sorting. _Done when:_ filtering a large catalog feels instant.
 
 **Phase 3 - Catalog editing.** Detail panel with all fields (title, type, style, instructors, level, event, date, tags, rating, favorite, notes); built-in style list plus user-added styles and instructors; tag autocomplete; bulk edit; linking a lesson to its demo. _Done when:_ a batch of videos can be fully tagged without leaving the keyboard.
 

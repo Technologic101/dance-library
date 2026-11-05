@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AppHealth, LibrarySummary, VideoListItem } from '../shared/api';
+import type { AppHealth, CatalogFacets, LibrarySummary, VideoListItem } from '../shared/api';
 import { App } from './App';
 
 const health: AppHealth = {
@@ -26,6 +26,12 @@ const present: VideoListItem = {
   id: 'vid-1',
   title: null,
   displayTitle: 'lesson-basic.mp4',
+  videoType: null,
+  styleName: null,
+  level: null,
+  favorite: false,
+  instructors: [],
+  tags: [],
   sizeBytes: 120 * 1024,
   durationMs: 2000,
   width: 640,
@@ -77,6 +83,13 @@ const missing: VideoListItem = {
   ],
 };
 
+const emptyFacets: CatalogFacets = {
+  styles: [],
+  instructors: [],
+  tags: [],
+  libraries: [{ id: 'lib', label: 'dance' }],
+};
+
 function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
   const notify = vi.fn(async () => {});
   window.danceLibrary = {
@@ -84,6 +97,7 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
     notifyViewReady: notify,
     listLibraries: async () => [library],
     listVideos: async () => [present, missing],
+    listFacets: async () => emptyFacets,
     countVideos: async () => ({ visible: 2, excluded: 0 }),
     excludeVideos: async () => ({ changed: 1, requested: 1 }),
     restoreVideos: async () => ({ changed: 1, requested: 1 }),
@@ -194,6 +208,67 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.click(screen.getByRole('button', { name: 'Rescan dance' }));
     await waitFor(() => expect(scanLibrary).toHaveBeenCalledWith('lib'));
+  });
+
+  it('filters the catalog from the search box', async () => {
+    const listVideos = vi.fn(async (query) => {
+      if (query?.text === 'zouk') return [present];
+      return [present, missing];
+    });
+    api({
+      listVideos,
+      listFacets: async () => ({
+        ...emptyFacets,
+        styles: [{ id: 'builtin:zouk', name: 'Zouk' }],
+        instructors: [{ id: 'aline', name: 'Aline' }],
+        tags: [{ id: 'wave', name: 'body wave' }],
+      }),
+    });
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'lesson-basic.mp4' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'gone.mp4' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
+      target: { value: 'zouk' },
+    });
+    await waitFor(() =>
+      expect(listVideos).toHaveBeenCalledWith(expect.objectContaining({ text: 'zouk' })),
+    );
+    expect(screen.queryByRole('heading', { name: 'gone.mp4' })).toBeNull();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Style' }), {
+      target: { value: 'builtin:zouk' },
+    });
+    await waitFor(() =>
+      expect(listVideos).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'zouk', styleIds: ['builtin:zouk'] }),
+      ),
+    );
+    fireEvent.change(screen.getByRole('combobox', { name: 'Instructor' }), {
+      target: { value: 'aline' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Level' }), {
+      target: { value: 'Intermediate' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Type' }), {
+      target: { value: 'lesson' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tag' }), {
+      target: { value: 'wave' },
+    });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Favorites' }));
+    await waitFor(() =>
+      expect(listVideos).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'zouk',
+          styleIds: ['builtin:zouk'],
+          instructorIds: ['aline'],
+          levels: ['Intermediate'],
+          videoTypes: ['lesson'],
+          tagIds: ['wave'],
+          favorite: true,
+        }),
+      ),
+    );
   });
 
   it('shows an empty catalog', async () => {

@@ -7,6 +7,7 @@ export const IpcChannels = {
   scanLibrary: 'library:scan',
   scanAll: 'library:scan-all',
   listVideos: 'video:list',
+  listFacets: 'catalog:facets',
   countVideos: 'video:count',
   excludeVideos: 'video:exclude',
   restoreVideos: 'video:restore',
@@ -32,6 +33,23 @@ export type AppHealth = {
 
 export type CaptureDateSource = 'metadata' | 'filename' | 'file_time';
 
+export const videoTypes = ['lesson', 'demo', 'social dance', 'performance'] as const;
+export type VideoType = (typeof videoTypes)[number];
+
+export const levels = ['Beginner', 'Intermediate', 'Advanced', 'Master', 'All levels'] as const;
+export type Level = (typeof levels)[number];
+
+export const videoSorts = [
+  'newest',
+  'oldest',
+  'title',
+  'title-desc',
+  'longest',
+  'shortest',
+  'relevance',
+] as const;
+export type VideoSort = (typeof videoSorts)[number];
+
 export type LibrarySummary = {
   id: string;
   path: string;
@@ -54,9 +72,15 @@ export type VideoLocationItem = {
 
 export type VideoListItem = {
   id: string;
-  /** Custom title. Empty until a later phase edits it. */
+  /** Custom title. Falls back to the filename until someone edits it. */
   title: string | null;
   displayTitle: string;
+  videoType: VideoType | null;
+  styleName: string | null;
+  level: Level | null;
+  favorite: boolean;
+  instructors: string[];
+  tags: string[];
   sizeBytes: number | null;
   durationMs: number | null;
   width: number | null;
@@ -76,6 +100,34 @@ export type VideoListItem = {
 export type VideoCounts = {
   visible: number;
   excluded: number;
+};
+
+export type VideoQuery = {
+  excluded?: boolean;
+  /** Matched against titles, notes, tags, and filenames. */
+  text?: string;
+  capturedFrom?: string;
+  capturedTo?: string;
+  videoTypes?: VideoType[];
+  styleIds?: string[];
+  instructorIds?: string[];
+  levels?: Level[];
+  /** A video must have every selected tag. */
+  tagIds?: string[];
+  libraryIds?: string[];
+  durationMinMs?: number;
+  durationMaxMs?: number;
+  favorite?: boolean;
+  sort?: VideoSort;
+};
+
+export type CatalogFacet = { id: string; name: string };
+
+export type CatalogFacets = {
+  styles: CatalogFacet[];
+  instructors: CatalogFacet[];
+  tags: CatalogFacet[];
+  libraries: { id: string; label: string }[];
 };
 
 export type VideoChangeResult = {
@@ -133,7 +185,8 @@ export type DanceLibraryApi = {
   /** No-op unless the main process was started with DANCE_LIBRARY_SCREENSHOT. */
   notifyViewReady: () => Promise<void>;
   listLibraries: () => Promise<LibrarySummary[]>;
-  listVideos: (options?: { excluded?: boolean }) => Promise<VideoListItem[]>;
+  listVideos: (options?: VideoQuery) => Promise<VideoListItem[]>;
+  listFacets: () => Promise<CatalogFacets>;
   countVideos: () => Promise<VideoCounts>;
   /** Opens a folder picker, then indexes each chosen folder. */
   addLibraries: () => Promise<AddLibrariesResult>;

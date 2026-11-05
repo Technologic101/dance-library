@@ -22,7 +22,12 @@ describe('catalog schema', () => {
   it('upgrades a phase 0 database and keeps the references-only policy', () => {
     const db = openMemory();
     applyMigrations(db, [migration001]);
-    expect(migrate(db)).toEqual(['002_catalog', '003_content_identity', '004_path_key']);
+    expect(migrate(db)).toEqual([
+      '002_catalog',
+      '003_content_identity',
+      '004_path_key',
+      '005_search',
+    ]);
     expect(migrate(db)).toEqual([]);
 
     const policy = db.prepare(`SELECT value FROM app_meta WHERE key = 'catalog_policy'`).get() as {
@@ -52,6 +57,12 @@ describe('catalog schema', () => {
       'video_redirects',
       'video_tags',
       'videos',
+      'videos_fts',
+      'videos_fts_config',
+      'videos_fts_content',
+      'videos_fts_data',
+      'videos_fts_docsize',
+      'videos_fts_idx',
     ]);
 
     db.prepare(
@@ -94,7 +105,7 @@ describe('catalog schema', () => {
        ) VALUES ('vid', 'lib', '/dance/a.mp4', 'a.mp4', 'Warmup', 'keep me', 1, 't', 't')`,
     ).run();
 
-    expect(migrate(db)).toEqual(['003_content_identity', '004_path_key']);
+    expect(migrate(db)).toEqual(['003_content_identity', '004_path_key', '005_search']);
     const video = db.prepare(`SELECT title, notes, favorite, excluded FROM videos`).get() as {
       title: string;
       notes: string;
