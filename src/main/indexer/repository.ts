@@ -644,15 +644,14 @@ function takeLocationSample(
   limit: number,
   presence: 'present' | null,
 ): LocationRecord[] {
-  const presenceSql = presence ? `AND presence = '${presence}'` : '';
   return db
     .prepare(
       `${LOCATION_SELECT}
-       WHERE library_id = ? ${presenceSql}
+       WHERE library_id = ? AND (? IS NULL OR presence = ?)
        ORDER BY last_scan_generation DESC, updated_at DESC, id DESC
        LIMIT ?`,
     )
-    .all(libraryId, limit) as LocationRecord[];
+    .all(libraryId, presence, presence, limit) as LocationRecord[];
 }
 
 export type CatalogRepository = ReturnType<typeof createRepository>;

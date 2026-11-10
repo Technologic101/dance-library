@@ -56,6 +56,7 @@ function largeDeps(input: { files: FakeFile[]; directories: string[]; failHash?:
     describePath: (filePath, listed) => describeWindowsPath(filePath, listed),
     isDirectory: (filePath) => input.directories.includes(filePath),
     exists: (filePath) => input.directories.includes(filePath) || fileMap.has(filePath),
+    sameFilePathAlias: async (left, right) => left === right,
     readDirectory: async () => true,
     directoryHasEntries: async (dir) => hasEntries(dir, input.files, input.directories),
     walkVideos: async function* (root) {
@@ -143,6 +144,30 @@ const original: FakeFile = {
 };
 
 describe('review regressions', () => {
+  it('marks an unreadable root without starting a scan or changing availability', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const scan = largeDeps({ directories: ['D:\\dance'], files: [] });
+    scan.deps.listMounts = async () => [];
+    scan.deps.directoryHasEntries = async () => null;
+
+    const summary = await scanLibrary(db, 'lib', scan.deps, { thumbsDir: tempDir() });
+
+    expect(summary).toMatchObject({ errors: 1, offline: 0, discovered: 0 });
+    expect(
+      db
+        .prepare(
+          `SELECT availability, scan_generation AS generation, last_error AS lastError FROM libraries`,
+        )
+        .get(),
+    ).toEqual({
+      availability: 'online',
+      generation: 0,
+      lastError: expect.stringMatching(/could not be read/i),
+    });
+  });
+
   it('does not catalog zero-byte files as one shared video', async () => {
     const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
     databases.push(db);
@@ -401,6 +426,7 @@ describe('review regressions', () => {
     scan.deps.exists = (filePath) =>
       scan.deps.isDirectory(filePath) ||
       [renamed.path].some((candidate) => fold(candidate) === fold(filePath));
+    scan.deps.sameFilePathAlias = async (left, right) => fold(left) === fold(right);
     scan.deps.stat = async (filePath) => {
       if (fold(filePath) !== fold(renamed.path)) {
         const error = new Error('missing') as NodeJS.ErrnoException;
@@ -701,6 +727,25 @@ describe('review regressions', () => {
     });
   });
 
+  it('does not rewrite a case-differing hard link on a case-sensitive filesystem', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const upper: FakeFile = { ...original, path: 'D:\\dance\\Clip.mp4', fileId: '77' };
+    const lower: FakeFile = { ...original, path: 'D:\\dance\\clip.mp4', fileId: '77' };
+    const first = largeDeps({ directories: ['D:\\dance'], files: [upper] });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+    const locationId = (db.prepare(`SELECT id FROM video_locations`).get() as { id: string }).id;
+    const second = largeDeps({ directories: ['D:\\dance'], files: [lower, upper] });
+    second.thumbs.add(`${id}.jpg`);
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+    expect(summary).toMatchObject({ updated: 0, linked: 1, unchanged: 1, missing: 0 });
+    expect(db.prepare(`SELECT path FROM video_locations WHERE id = ?`).get(locationId)).toEqual({
+      path: upper.path,
+    });
+  });
+
   it('still rewrites a rename that differs only by case', async () => {
     const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
     databases.push(db);
@@ -711,6 +756,8 @@ describe('review regressions', () => {
     scan.deps.exists = (filePath) =>
       scan.deps.isDirectory(filePath) ||
       [renamed.path].some((candidate) => fold(candidate) === fold(filePath));
+    // Windows takes the pathsEqual fast path; this exercises canonical aliases on POSIX.
+    scan.deps.sameFilePathAlias = async (left, right) => fold(left) === fold(right);
     scan.deps.stat = async (filePath) => {
       if (scan.deps.isDirectory(filePath)) {
         return {
@@ -853,7 +900,7 @@ describe('review regressions', () => {
     });
   });
 
-  it('does not mark almost every file missing when the mount listing is empty', async () => {
+  it('allows a small library to record a missing file when the root volume matches', async () => {
     const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
     databases.push(db);
     addLibrary(db);
@@ -875,15 +922,15 @@ describe('review regressions', () => {
       return stat;
     };
     const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
-    expect(summary.missing).toBe(0);
-    expect(summary.errors).toBe(1);
+    expect(summary.missing).toBe(1);
+    expect(summary.errors).toBe(0);
     expect(
       db.prepare(`SELECT presence FROM video_locations WHERE path = ?`).get(original.path),
     ).toEqual({
-      presence: 'present',
+      presence: 'missing',
     });
-    expect(db.prepare(`SELECT last_error AS lastError FROM libraries`).get()).toMatchObject({
-      lastError: expect.stringMatching(/not marked missing/i),
+    expect(db.prepare(`SELECT last_error AS lastError FROM libraries`).get()).toEqual({
+      lastError: null,
     });
   });
 

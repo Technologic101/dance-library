@@ -42,6 +42,8 @@ export type ScanDeps = {
   describePath: (filePath: string, mounts: readonly Mount[]) => VolumeLocation | null;
   isDirectory: (filePath: string) => boolean;
   exists: (filePath: string) => boolean;
+  /** True only when two spellings resolve to the same directory entry. */
+  sameFilePathAlias?: (left: string, right: string) => Promise<boolean>;
   readDirectory: (dir: string) => Promise<boolean>;
   /**
    * True when the directory has a real entry, false when it is empty or only
@@ -220,10 +222,13 @@ export async function scanLibrary(
   summary.discovered = files.length;
 
   const seen = new Set<string>();
-  const presentAtStart = repo
-    .locationsForLibrary(library.id)
-    .filter((location) => location.presence === 'present')
-    .map((location) => location.id);
+  const presentAtStart =
+    mounts.length === 0
+      ? repo
+          .locationsForLibrary(library.id)
+          .filter((location) => location.presence === 'present')
+          .map((location) => location.id)
+      : [];
   for (const [index, file] of files.entries()) {
     const filename = fileNameOf(file);
     emit(
@@ -344,9 +349,18 @@ async function indexFile(
 
   const currentVideo = location ? repo.getVideo(location.videoId) : null;
   if (location && currentVideo && canSkipProbe(location, currentVideo, stat, deps)) {
-    repo.updateLocation(
-      locationWrite(location.id, location.videoId, input, stat, filename, deps, location.volumeId),
+    const write = locationWrite(
+      location.id,
+      location.videoId,
+      input,
+      stat,
+      filename,
+      deps,
+      location.volumeId,
     );
+    // Avoid an autocommit for every unchanged file. This is particularly
+    // expensive on Windows; seen already protects it from missing-marking.
+    if (locationNeedsWrite(location, write)) repo.updateLocation(write);
     input.seen.add(location.id);
     return changedLocation(location, input.filePath, input.libraryId) ? 'updated' : 'unchanged';
   }
@@ -614,7 +628,14 @@ async function identityLocation(
   // spelling. The inode matches, so rewrite that row instead of adding one.
   for (const row of rows) {
     if (seen.has(row.id) || pathsEqual(row.path, filePath)) continue;
-    if (row.libraryId !== libraryId || !isCaseAlias(row.path, filePath)) continue;
+    if (
+      row.libraryId !== libraryId ||
+      !isCaseAlias(row.path, filePath) ||
+      !deps.sameFilePathAlias ||
+      !(await deps.sameFilePathAlias(row.path, filePath))
+    ) {
+      continue;
+    }
     try {
       const alias = await deps.stat(row.path);
       if (
@@ -696,7 +717,7 @@ function mostPresentWouldBeMissing(
     if (!stored || seen.has(id)) return false;
     return !underDirectory(stored, unreadable);
   });
-  return missing.length / presentAtStart.length > 0.9;
+  return missing.length >= 20 && missing.length / presentAtStart.length > 0.9;
 }
 
 function isCaseAlias(stored: string, current: string): boolean {
@@ -776,6 +797,23 @@ function locationWrite(
     generation: input.generation,
     now: deps.now(),
   };
+}
+
+function locationNeedsWrite(
+  location: LocationRecord,
+  write: ReturnType<typeof locationWrite>,
+): boolean {
+  return (
+    location.videoId !== write.videoId ||
+    location.libraryId !== write.libraryId ||
+    location.path !== write.path ||
+    location.filename !== write.filename ||
+    location.volumeId !== write.volumeId ||
+    location.fileId !== write.fileId ||
+    location.sizeBytes !== write.sizeBytes ||
+    location.mtimeNs !== write.mtimeNs ||
+    location.presence !== 'present'
+  );
 }
 
 function canSkipProbe(

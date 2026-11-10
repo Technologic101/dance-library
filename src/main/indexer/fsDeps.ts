@@ -39,6 +39,13 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
         return false;
       }
     },
+    sameFilePathAlias: async (left, right) => {
+      try {
+        return (await fs.promises.realpath(left)) === (await fs.promises.realpath(right));
+      } catch {
+        return false;
+      }
+    },
     readDirectory: directoryReadable,
     directoryHasEntries: directoryHasEntries,
     walkVideos,
@@ -64,6 +71,11 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
 }
 
 const ROOT_LITTER = new Set([
+  '$recycle.bin',
+  'recycler',
+  'found.000',
+  'thumbs.db',
+  'desktop.ini',
   '.ds_store',
   '.trashes',
   '.spotlight-v100',

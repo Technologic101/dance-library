@@ -26,6 +26,7 @@ describe('directoryHasEntries', () => {
     fs.writeFileSync(path.join(folder, '.DS_Store'), 'x');
     fs.mkdirSync(path.join(folder, '.Spotlight-V100'));
     fs.writeFileSync(path.join(folder, 'System Volume Information'), 'x');
+    fs.writeFileSync(path.join(folder, 'desktop.ini'), 'x');
     expect(await deps.directoryHasEntries(folder)).toBe(false);
     fs.writeFileSync(path.join(folder, 'clip.mp4'), 'x');
     expect(await deps.directoryHasEntries(folder)).toBe(true);
