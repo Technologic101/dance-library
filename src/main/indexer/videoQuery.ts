@@ -33,7 +33,9 @@ export function videoListQuery(query: VideoQuery): {
     if (query.capturedToDay) params.capturedToDay = query.capturedToDay;
     const instantBounds = ["instr(COALESCE(captured_at, ''), 'T') > 0"];
     if (query.capturedFrom) instantBounds.push('captured_at >= @capturedFrom');
+    else if (query.capturedFromDay) instantBounds.push('0');
     if (query.capturedTo) instantBounds.push('captured_at < @capturedTo');
+    else if (query.capturedToDay) instantBounds.push('0');
     const dayBounds = ['captured_at IS NOT NULL', "instr(captured_at, 'T') = 0"];
     if (query.capturedFromDay) dayBounds.push('captured_at >= @capturedFromDay');
     else if (query.capturedFrom) dayBounds.push('0');
@@ -101,6 +103,7 @@ export function videoListQuery(query: VideoQuery): {
       v.id AS id,
       ${sortsByTitle ? `${displayTitle} AS displayTitle,` : ''}
       v.captured_at AS capturedAt,
+      ${captureSortKey('v.captured_at')} AS capturedSortKey,
       v.duration_ms AS durationMs
       ${hasText ? ', fts.rank AS rank' : ''}
     FROM videos v
@@ -209,13 +212,14 @@ function addExists(
 
 function orderBy(sort: VideoSort | undefined, hasText: boolean, scope: 'inner' | 'outer'): string {
   const captured = scope === 'inner' ? 'v.captured_at' : 'page.capturedAt';
+  const capturedSortKey = scope === 'inner' ? captureSortKey(captured) : 'page.capturedSortKey';
   const duration = scope === 'inner' ? 'v.duration_ms' : 'page.durationMs';
   const title = scope === 'inner' ? 'displayTitle' : 'page.displayTitle';
   const rank = scope === 'inner' ? 'rank' : 'page.rank';
   const id = 'v.id';
   switch (sort) {
     case 'oldest':
-      return `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${captured} ASC, ${id} ASC`;
+      return `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${capturedSortKey} ASC, ${id} ASC`;
     case 'title':
       return `${title} COLLATE NOCASE ASC, ${id} ASC`;
     case 'title-desc':
@@ -227,9 +231,16 @@ function orderBy(sort: VideoSort | undefined, hasText: boolean, scope: 'inner' |
     case 'relevance':
       return hasText
         ? `${rank} ASC, ${id} ASC`
-        : `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${captured} DESC, ${id} ASC`;
+        : `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${capturedSortKey} DESC, ${id} ASC`;
     case 'newest':
     default:
-      return `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${captured} DESC, ${id} ASC`;
+      return `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${capturedSortKey} DESC, ${id} ASC`;
   }
+}
+
+/** Date-only values represent local midnight; timestamp values are already UTC instants. */
+function captureSortKey(column: string): string {
+  return `CASE WHEN instr(${column}, 'T') = 0
+    THEN julianday(${column} || ' 00:00:00', 'utc')
+    ELSE julianday(${column}) END`;
 }

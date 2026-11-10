@@ -446,7 +446,23 @@ describe('catalog search', () => {
       .filter((detail) => /SEARCH videos USING .*videos_captured/.test(detail));
 
     expect(searches).toHaveLength(2);
-    expect(plan.map((row) => row.detail).join('\n')).not.toMatch(/SCAN videos$/m);
+    expect(plan.map((row) => row.detail).join('\n')).not.toMatch(/^SCAN (?:v|videos)\b/m);
+  });
+
+  it('sorts date-only captures at local midnight alongside UTC instants', () => {
+    const db = open();
+    addVideo(db, { id: 'previous-evening', capturedAt: new Date(2024, 2, 14, 22).toISOString() });
+    addVideo(db, { id: 'local-day', capturedAt: '2024-03-15' });
+    const repo = createRepository(db);
+
+    expect(repo.listVideoSummaries({ sort: 'newest' }).map((item) => item.id)).toEqual([
+      'local-day',
+      'previous-evening',
+    ]);
+    expect(repo.listVideoSummaries({ sort: 'oldest' }).map((item) => item.id)).toEqual([
+      'previous-evening',
+      'local-day',
+    ]);
   });
 
   it('treats duration preset edges as exclusive', () => {

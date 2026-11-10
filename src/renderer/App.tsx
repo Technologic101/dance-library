@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { SetStateAction } from 'react';
 import type {
   AddLibrariesResult,
   AppHealth,
@@ -50,8 +51,10 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     tags: [],
     libraries: [],
   });
-  const [filters, setFilters] = useState<BrowseFilters>(emptyBrowseFilters);
-  const [page, setPage] = useState(0);
+  const [{ filters, page }, setBrowse] = useState(() => ({
+    filters: emptyBrowseFilters(),
+    page: 0,
+  }));
   const [matchTotal, setMatchTotal] = useState<number | null>(null);
   const [catalogView, setCatalogView] = useState<CatalogView>('library');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -75,6 +78,21 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     // filterKey replaces the live search text with its debounced value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterKey, page]);
+
+  function setPage(next: SetStateAction<number>): void {
+    setBrowse((current) => ({
+      ...current,
+      page: typeof next === 'function' ? next(current.page) : next,
+    }));
+  }
+
+  function setFiltersAndResetPage(next: SetStateAction<BrowseFilters>): void {
+    setBrowse((current) => {
+      const filtersNow = typeof next === 'function' ? next(current.filters) : next;
+      if (filtersNow === current.filters) return current;
+      return { filters: filtersNow, page: 0 };
+    });
+  }
 
   useEffect(() => {
     let active = true;
@@ -107,10 +125,10 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         setLibraries(nextLibraries);
         setCounts(nextCounts);
         setFacets(nextFacets);
-        setFilters((current) => dropMissingFacets(current, nextFacets));
+        setFiltersAndResetPage((current) => dropMissingFacets(current, nextFacets));
       })
       .catch((caught: unknown) => {
-        if (active) setLoadError(messageOf(caught));
+        if (active && metadataSeq === metaSeq.current) setLoadError(messageOf(caught));
       });
     return () => {
       active = false;
@@ -162,7 +180,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       setLibraries(nextLibraries);
       setCounts(nextCounts);
       setFacets(nextFacets);
-      setFilters((filtersNow) => dropMissingFacets(filtersNow, nextFacets));
+      setFiltersAndResetPage((filtersNow) => dropMissingFacets(filtersNow, nextFacets));
     }
     if (seq !== listSeq.current) return;
     setVideos(pageResult.items);
@@ -363,8 +381,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             facets={facets}
             value={filters}
             onChange={(next) => {
-              setFilters(next);
-              setPage(0);
+              setFiltersAndResetPage(next);
             }}
           />
           {loadError ? <p role="alert">{loadError}</p> : null}

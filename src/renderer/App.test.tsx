@@ -336,6 +336,65 @@ describe('App', () => {
     );
   });
 
+  it('returns to the first page when a filter changes', async () => {
+    const listVideos = vi.fn(async (query: unknown) => {
+      void query;
+      return { items: [present, missing], total: 96 };
+    });
+    api({ listVideos });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() =>
+      expect(listVideos).toHaveBeenCalledWith(expect.objectContaining({ offset: 48 })),
+    );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Favorites' }));
+    await waitFor(() =>
+      expect(listVideos).toHaveBeenLastCalledWith(
+        expect.objectContaining({ favorite: true, offset: 0 }),
+      ),
+    );
+  });
+
+  it('returns to the first page when refresh drops a missing facet', async () => {
+    let facetCalls = 0;
+    const listVideos = vi.fn(async (query: unknown) => {
+      void query;
+      return { items: [present, missing], total: 96 };
+    });
+    api({
+      listVideos,
+      listFacets: async () => {
+        facetCalls += 1;
+        return facetCalls === 1 ? emptyFacets : { ...emptyFacets, libraries: [] };
+      },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'lib' },
+    });
+    await waitFor(() =>
+      expect(listVideos).toHaveBeenLastCalledWith(
+        expect.objectContaining({ libraryIds: ['lib'], offset: 0 }),
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() =>
+      expect(listVideos).toHaveBeenLastCalledWith(
+        expect.objectContaining({ libraryIds: ['lib'], offset: 48 }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rescan dance' }));
+    await waitFor(() => {
+      const lastQuery = listVideos.mock.calls.at(-1)?.[0];
+      expect(lastQuery).toEqual(expect.objectContaining({ offset: 0 }));
+      expect(lastQuery).not.toHaveProperty('libraryIds');
+    });
+  });
+
   it('clears a failed load after a later search succeeds', async () => {
     let fail = true;
     api({
