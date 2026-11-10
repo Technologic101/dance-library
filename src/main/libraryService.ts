@@ -12,7 +12,11 @@ import type {
   VideoListPage,
   VideoQuery,
   CatalogFacets,
+  BulkVideoUpdate,
+  CatalogValueKind,
+  VideoUpdate,
 } from '../shared/api';
+import { createCatalogEditor } from './catalogEditing';
 import { createScanDeps } from './indexer/fsDeps';
 import { createRepository, type CatalogRepository } from './indexer/repository';
 import { emptyScanSummary, mergeScanSummary, scanLibrary, type ScanDeps } from './indexer/scan';
@@ -30,6 +34,7 @@ export function createLibraryService(
   deps: ScanDeps = createScanDeps(thumbsDir),
 ) {
   const repo = createRepository(db);
+  const editor = createCatalogEditor(db);
   let gate: Promise<void> = Promise.resolve();
 
   function enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -62,6 +67,34 @@ export function createLibraryService(
 
     countVideos(): VideoCounts {
       return repo.countVideos();
+    },
+
+    getVideoDetails(id: string) {
+      return editor.getVideoDetails(repo.resolveVideoId(id));
+    },
+    updateVideo(id: string, patch: VideoUpdate) {
+      return Promise.resolve(editor.updateVideo(repo.resolveVideoId(id), patch));
+    },
+    bulkUpdateVideos(ids: readonly string[], patch: BulkVideoUpdate): Promise<VideoChangeResult> {
+      const resolved = [...new Set(ids.map((id) => repo.resolveVideoId(id)))];
+      return Promise.resolve({
+        changed: editor.bulkUpdate(resolved, patch),
+        requested: resolved.length,
+      });
+    },
+    searchCatalogValues(kind: CatalogValueKind, query: string) {
+      return editor.searchValues(kind, query);
+    },
+    createCatalogValue(kind: CatalogValueKind, name: string) {
+      return editor.createValue(kind, name);
+    },
+    linkLessonDemo(lessonId: string, demoId: string) {
+      editor.linkLessonDemo(repo.resolveVideoId(lessonId), repo.resolveVideoId(demoId));
+      return Promise.resolve();
+    },
+    unlinkLessonDemo(lessonId: string, demoId: string) {
+      editor.unlinkLessonDemo(repo.resolveVideoId(lessonId), repo.resolveVideoId(demoId));
+      return Promise.resolve();
     },
 
     excludeVideos(ids: readonly string[]): Promise<VideoChangeResult> {

@@ -586,7 +586,7 @@ describe('catalog search', () => {
          ORDER BY name`,
       )
       .all() as { name: string; sql: string }[];
-    expect(triggers).toHaveLength(10);
+    expect(triggers).toHaveLength(14);
     for (const trigger of triggers) {
       for (const statement of trigger.sql.matchAll(
         /(?:UPDATE|DELETE FROM) videos_fts[\s\S]*?;/gi,
@@ -681,5 +681,11 @@ describe('catalog search', () => {
     expect(
       db.prepare(`SELECT captured_at AS capturedAt FROM videos WHERE id = 'vid'`).get(),
     ).toMatchObject({ capturedAt: expect.stringMatching(/Z$/) });
+    db.prepare(`UPDATE videos SET event_name='Legacy Congress' WHERE id='vid'`).run();
+    expect(
+      createRepository(db)
+        .listVideoSummaries({ text: 'Legacy Congress' })
+        .map((item) => item.id),
+    ).toEqual(['vid']);
   });
 });

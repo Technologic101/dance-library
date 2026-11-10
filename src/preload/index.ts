@@ -14,6 +14,18 @@ const api: DanceLibraryApi = {
   removeLibrary: (libraryId) => ipcRenderer.invoke(IpcChannels.removeLibrary, libraryId),
   excludeVideos: (videoIds) => ipcRenderer.invoke(IpcChannels.excludeVideos, videoIds),
   restoreVideos: (videoIds) => ipcRenderer.invoke(IpcChannels.restoreVideos, videoIds),
+  getVideoDetails: (videoId) => ipcRenderer.invoke(IpcChannels.getVideoDetails, videoId),
+  updateVideo: (videoId, patch) => ipcRenderer.invoke(IpcChannels.updateVideo, videoId, patch),
+  bulkUpdateVideos: (videoIds, patch) =>
+    ipcRenderer.invoke(IpcChannels.bulkUpdateVideos, videoIds, patch),
+  searchCatalogValues: (kind, query) =>
+    ipcRenderer.invoke(IpcChannels.searchCatalogValues, kind, query),
+  createCatalogValue: (kind, name) =>
+    ipcRenderer.invoke(IpcChannels.createCatalogValue, kind, name),
+  linkLessonDemo: (lessonId, demoId) =>
+    ipcRenderer.invoke(IpcChannels.linkLessonDemo, lessonId, demoId),
+  unlinkLessonDemo: (lessonId, demoId) =>
+    ipcRenderer.invoke(IpcChannels.unlinkLessonDemo, lessonId, demoId),
   scanLibrary: (libraryId) => ipcRenderer.invoke(IpcChannels.scanLibrary, libraryId),
   scanAll: () => ipcRenderer.invoke(IpcChannels.scanAll),
   onScanProgress(listener) {

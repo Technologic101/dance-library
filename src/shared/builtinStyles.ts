@@ -26,6 +26,7 @@ export const builtinStyleNames = [
   'House',
   'Jazz',
   'Kizomba',
+  'Kizomba Fusion',
   'Kuduro',
   'Lambada',
   'Lindy Hop',
@@ -39,6 +40,8 @@ export const builtinStyleNames = [
   'Reggaeton',
   'Rumba',
   'Salsa',
+  'Salsa On1',
+  'Salsa On2',
   'Samba',
   'Samba Rock',
   'Semba',
@@ -52,6 +55,8 @@ export const builtinStyleNames = [
   'Waltz',
   'West Coast Swing',
   'Zouk',
+  'Brazilian Zouk',
+  'Zouk Lambada',
 ] as const;
 
 export function builtinStyleId(name: string): string {

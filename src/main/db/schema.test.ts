@@ -4,6 +4,7 @@ import { createRepository } from '../indexer/repository';
 import { applyMigrations, migrate, migrations } from './migrate';
 import { migration001 } from './migrations/001_init';
 import { migration002 } from './migrations/002_catalog';
+import { repairSearchIndex } from './searchIndex';
 
 const openDatabases: Database.Database[] = [];
 
@@ -19,6 +20,44 @@ afterEach(() => {
 });
 
 describe('catalog schema', () => {
+  it('installs identical guarded triggers after a v5 upgrade and a fresh catalog repair', () => {
+    const upgraded = openMemory();
+    applyMigrations(upgraded, migrations.slice(0, 5));
+    migrate(upgraded);
+
+    const repaired = openMemory();
+    migrate(repaired);
+    repaired.exec('DROP TABLE video_search_keys');
+    repairSearchIndex(repaired);
+
+    const triggerSql = (db: Database.Database) =>
+      db.prepare(`SELECT name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name`).all();
+    expect(triggerSql(upgraded)).toEqual(triggerSql(repaired));
+    for (const name of ['instructors_fts_rename', 'styles_fts_rename']) {
+      const row = upgraded
+        .prepare(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?`)
+        .get(name) as { sql: string };
+      expect(row.sql).toContain('WHEN old.name IS NOT new.name');
+    }
+  });
+  it('adds Phase 3 built-in styles when upgrading v5 without duplicating a user style', () => {
+    const db = openMemory();
+    applyMigrations(db, migrations.slice(0, 5));
+    db.prepare(
+      `INSERT INTO styles(id,name,builtin,created_at) VALUES('user-zouk','Brazilian Zouk',0,'t')`,
+    ).run();
+    expect(migrate(db)).toEqual(['006_catalog_editing', '007_catalog_editing_fixes']);
+    for (const name of [
+      'Kizomba Fusion',
+      'Salsa On1',
+      'Salsa On2',
+      'Brazilian Zouk',
+      'Zouk Lambada',
+    ]) {
+      const rows = db.prepare('SELECT id FROM styles WHERE name=? COLLATE NOCASE').all(name);
+      expect(rows, name).toHaveLength(1);
+    }
+  });
   it('upgrades a phase 0 database and keeps the references-only policy', () => {
     const db = openMemory();
     applyMigrations(db, [migration001]);
@@ -27,6 +66,8 @@ describe('catalog schema', () => {
       '003_content_identity',
       '004_path_key',
       '005_search',
+      '006_catalog_editing',
+      '007_catalog_editing_fixes',
     ]);
     expect(migrate(db)).toEqual([]);
 
@@ -106,7 +147,13 @@ describe('catalog schema', () => {
        ) VALUES ('vid', 'lib', '/dance/a.mp4', 'a.mp4', 'Warmup', 'keep me', 1, 't', 't')`,
     ).run();
 
-    expect(migrate(db)).toEqual(['003_content_identity', '004_path_key', '005_search']);
+    expect(migrate(db)).toEqual([
+      '003_content_identity',
+      '004_path_key',
+      '005_search',
+      '006_catalog_editing',
+      '007_catalog_editing_fixes',
+    ]);
     const video = db.prepare(`SELECT title, notes, favorite, excluded FROM videos`).get() as {
       title: string;
       notes: string;
@@ -189,7 +236,7 @@ describe('catalog schema', () => {
     db.prepare(`INSERT INTO tags (id, name, created_at) VALUES ('tag-wave', 'wave', 't')`).run();
     db.prepare(`INSERT INTO video_tags (video_id, tag_id) VALUES ('vid', 'tag-wave')`).run();
 
-    expect(migrate(db)).toEqual(['005_search']);
+    expect(migrate(db)).toEqual(['005_search', '006_catalog_editing', '007_catalog_editing_fixes']);
     const repo = createRepository(db);
     expect(repo.listVideoSummaries({ text: 'kizomba' }).map((item) => item.id)).toEqual(['vid']);
     expect(repo.listVideoSummaries({ text: 'copy' }).map((item) => item.id)).toEqual(['vid']);

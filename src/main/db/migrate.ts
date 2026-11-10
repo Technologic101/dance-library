@@ -4,6 +4,8 @@ import { migration002 } from './migrations/002_catalog';
 import { migration003 } from './migrations/003_content_identity';
 import { migration004 } from './migrations/004_path_key';
 import { migration005 } from './migrations/005_search';
+import { migration006 } from './migrations/006_catalog_editing';
+import { migration007 } from './migrations/007_catalog_editing_fixes';
 
 export type Migration = {
   id: number;
@@ -17,6 +19,8 @@ export const migrations: Migration[] = [
   migration003,
   migration004,
   migration005,
+  migration006,
+  migration007,
 ];
 
 export function applyMigrations(db: Database.Database, pending: readonly Migration[]): string[] {

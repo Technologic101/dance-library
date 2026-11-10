@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { SetStateAction } from 'react';
+import type { MouseEvent, SetStateAction } from 'react';
 import type {
   AddLibrariesResult,
   AppHealth,
@@ -22,6 +22,7 @@ import {
   videoTypeLabels,
 } from '../shared/search';
 import { FilterBar } from './FilterBar';
+import { DetailPanel } from './DetailPanel';
 
 type ViewMode = 'grid' | 'list';
 type CatalogView = 'library' | 'excluded';
@@ -63,6 +64,10 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<ViewMode>('grid');
+  const [editingIds, setEditingIds] = useState<string[] | null>(null);
+  const selectionAnchor = useRef<number>(-1);
+  const selectionExtent = useRef<number>(-1);
+  const listRef = useRef<HTMLUListElement>(null);
   const notified = useRef(false);
   const listSeq = useRef(0);
   const metaSeq = useRef(0);
@@ -109,6 +114,65 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     };
   }, [api]);
 
+  useEffect(() => {
+    function key(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (editingIds || (target instanceof Element && target.closest('.detail-panel'))) return;
+      if (
+        target instanceof Element &&
+        target.matches('input, textarea, select, [contenteditable=true]')
+      )
+        return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && videos) {
+        event.preventDefault();
+        setSelected(new Set(videos.map((v) => v.id)));
+        return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.toLowerCase() === 'e' && selected.size) {
+        event.preventDefault();
+        setEditingIds([...selected]);
+      }
+      if (event.key.toLowerCase() === 'f' && selected.size === 1) {
+        event.preventDefault();
+        const id = [...selected][0]!;
+        void api
+          .getVideoDetails(id)
+          .then((d) => api.updateVideo(id, { favorite: !d.favorite }))
+          .then(() => reload([id]))
+          .catch((caught: unknown) => setLoadError(messageOf(caught)));
+      }
+      if (
+        ['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key) &&
+        videos?.length
+      ) {
+        event.preventDefault();
+        const delta = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1;
+        const current =
+          selectionExtent.current < 0 ? (delta > 0 ? -1 : videos.length) : selectionExtent.current;
+        const next = Math.max(0, Math.min(videos.length - 1, current + delta));
+        selectionExtent.current = next;
+        if (event.shiftKey) {
+          if (selectionAnchor.current < 0)
+            selectionAnchor.current = current < 0 || current >= videos.length ? next : current;
+          const low = Math.min(selectionAnchor.current, next),
+            high = Math.max(selectionAnchor.current, next);
+          setSelected(new Set(videos.slice(low, high + 1).map((v) => v.id)));
+        } else {
+          selectionAnchor.current = next;
+          setSelected(new Set([videos[next]!.id]));
+        }
+        queueMicrotask(() =>
+          listRef.current?.querySelector<HTMLElement>(`[data-video-index="${next}"]`)?.focus(),
+        );
+      }
+    }
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+    // reload intentionally reads the latest query and is recreated during render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, editingIds, selected, videos]);
+
   const queryRef = useRef(query);
   queryRef.current = query;
 
@@ -145,6 +209,8 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         setMatchTotal(result.total);
         setLoadError(null);
         setSelected(new Set());
+        selectionAnchor.current = -1;
+        selectionExtent.current = -1;
         const nextPage = pageAfterShrink(page, result.total, videoPageSize);
         if (result.items.length === 0 && nextPage != null) setPage(nextPage);
       })
@@ -166,7 +232,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     void api.notifyViewReady();
   }, [api, busy, libraries, videos, health, healthError]);
 
-  async function reload(): Promise<void> {
+  async function reload(preserveIds: readonly string[] = []): Promise<void> {
     const seq = ++listSeq.current;
     const metadataSeq = ++metaSeq.current;
     const current = queryRef.current;
@@ -186,7 +252,13 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     setVideos(pageResult.items);
     setMatchTotal(pageResult.total);
     setLoadError(null);
-    setSelected(new Set());
+    const kept = preserveIds.filter((id) => pageResult.items.some((item) => item.id === id));
+    setSelected(new Set(kept));
+    const keptIndex = kept.length
+      ? pageResult.items.findIndex((item) => item.id === kept.at(-1))
+      : -1;
+    selectionAnchor.current = keptIndex;
+    selectionExtent.current = keptIndex;
     const sentPage = Math.floor((current.offset ?? 0) / videoPageSize);
     const nextPage = pageAfterShrink(sentPage, pageResult.total, videoPageSize);
     if (pageResult.items.length === 0 && nextPage != null) setPage(nextPage);
@@ -248,6 +320,16 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       else next.add(id);
       return next;
     });
+  }
+
+  function selectVideo(id: string, index: number, event: MouseEvent): void {
+    if (event.shiftKey && videos) {
+      const from = Math.min(selectionAnchor.current, index),
+        to = Math.max(selectionAnchor.current, index);
+      setSelected(new Set(videos.slice(from, to + 1).map((v) => v.id)));
+    } else if (event.ctrlKey || event.metaKey) toggleOne(id);
+    else setSelected(new Set([id]));
+    selectionAnchor.current = index;
   }
 
   function toggleAll(ids: readonly string[]): void {
@@ -397,13 +479,22 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
                 Select all
               </label>
               {catalogView === 'library' ? (
-                <button
-                  type="button"
-                  onClick={() => void onExclude()}
-                  disabled={busy || selected.size === 0}
-                >
-                  Remove from library{selected.size > 0 ? ` (${selected.size})` : ''}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setEditingIds([...selected])}
+                    disabled={selected.size === 0}
+                  >
+                    Edit{selected.size > 1 ? ` (${selected.size})` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onExclude()}
+                    disabled={busy || selected.size === 0}
+                  >
+                    Remove from library{selected.size > 0 ? ` (${selected.size})` : ''}
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
@@ -447,19 +538,40 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             </p>
           ) : null}
           {videos && videos.length > 0 ? (
-            <ul className={view === 'grid' ? 'video-grid' : 'video-list'}>
-              {videos.map((video) => (
+            <ul
+              ref={listRef}
+              role="listbox"
+              aria-multiselectable="true"
+              className={view === 'grid' ? 'video-grid' : 'video-list'}
+            >
+              {videos.map((video, index) => (
                 <VideoCard
                   key={video.id}
                   video={video}
                   selected={selected.has(video.id)}
+                  index={index}
                   onToggle={() => toggleOne(video.id)}
+                  onSelect={(event) => selectVideo(video.id, index, event)}
                 />
               ))}
             </ul>
           ) : null}
         </section>
       </div>
+      {editingIds ? (
+        <DetailPanel
+          key={editingIds.join(',')}
+          api={api}
+          ids={editingIds}
+          onClose={() => {
+            setEditingIds(null);
+            queueMicrotask(() =>
+              listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus(),
+            );
+          }}
+          onSaved={() => reload(editingIds)}
+        />
+      ) : null}
       <footer>
         <p className="policy">
           References only. This app never moves, modifies, or deletes video files.
@@ -474,20 +586,32 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
 function VideoCard({
   video,
   selected,
+  index,
   onToggle,
+  onSelect,
 }: {
   video: VideoListItem;
   selected: boolean;
+  index: number;
   onToggle: () => void;
+  onSelect: (event: MouseEvent) => void;
 }) {
   const copies = video.locations.length;
   const details = catalogDetails(video);
   return (
-    <li className={video.presence === 'missing' ? 'video missing' : 'video'}>
+    <li
+      role="option"
+      aria-selected={selected}
+      tabIndex={selected ? 0 : -1}
+      data-video-index={index}
+      className={`${video.presence === 'missing' ? 'video missing' : 'video'}${selected ? ' selected' : ''}`}
+      onClick={onSelect}
+    >
       <label className="select-video">
         <input
           type="checkbox"
           checked={selected}
+          onClick={(event) => event.stopPropagation()}
           onChange={onToggle}
           aria-label={`Select ${video.displayTitle}`}
         />
