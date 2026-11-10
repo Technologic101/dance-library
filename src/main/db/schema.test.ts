@@ -27,6 +27,7 @@ describe('catalog schema', () => {
       '003_content_identity',
       '004_path_key',
       '005_search',
+      '006_catalog_editing',
     ]);
     expect(migrate(db)).toEqual([]);
 
@@ -106,7 +107,12 @@ describe('catalog schema', () => {
        ) VALUES ('vid', 'lib', '/dance/a.mp4', 'a.mp4', 'Warmup', 'keep me', 1, 't', 't')`,
     ).run();
 
-    expect(migrate(db)).toEqual(['003_content_identity', '004_path_key', '005_search']);
+    expect(migrate(db)).toEqual([
+      '003_content_identity',
+      '004_path_key',
+      '005_search',
+      '006_catalog_editing',
+    ]);
     const video = db.prepare(`SELECT title, notes, favorite, excluded FROM videos`).get() as {
       title: string;
       notes: string;
@@ -189,7 +195,7 @@ describe('catalog schema', () => {
     db.prepare(`INSERT INTO tags (id, name, created_at) VALUES ('tag-wave', 'wave', 't')`).run();
     db.prepare(`INSERT INTO video_tags (video_id, tag_id) VALUES ('vid', 'tag-wave')`).run();
 
-    expect(migrate(db)).toEqual(['005_search']);
+    expect(migrate(db)).toEqual(['005_search', '006_catalog_editing']);
     const repo = createRepository(db);
     expect(repo.listVideoSummaries({ text: 'kizomba' }).map((item) => item.id)).toEqual(['vid']);
     expect(repo.listVideoSummaries({ text: 'copy' }).map((item) => item.id)).toEqual(['vid']);

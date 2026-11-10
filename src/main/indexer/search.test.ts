@@ -586,7 +586,7 @@ describe('catalog search', () => {
          ORDER BY name`,
       )
       .all() as { name: string; sql: string }[];
-    expect(triggers).toHaveLength(10);
+    expect(triggers).toHaveLength(14);
     for (const trigger of triggers) {
       for (const statement of trigger.sql.matchAll(
         /(?:UPDATE|DELETE FROM) videos_fts[\s\S]*?;/gi,

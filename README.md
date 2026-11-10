@@ -2,7 +2,7 @@
 
 A small desktop app for cataloging a personal dance video library (zouk, kizomba and other social styles): lessons, post-lesson demos, social dances and performances. It indexes videos where they already live, on a local or external drive and in a Google Photos Takeout export, helps consolidate them into one library, and gives a fast way to find, tag and practice with them. Intended to be open source and installable by anyone, with no Python, Node or other setup required.
 
-> Status: Phases 0–2 are implemented. Phase 1 indexes source folders into one catalog item per video, with extra copies kept as locations. People can exclude items, and exclusion survives a rescan. Phase 2 browses that catalog in a thumbnail grid or list, with full-text search and filters. Phases 3–6 are not built. Auto-update is not active. The sections below are still the plan for the remaining phases.
+> Status: Phases 0–3 are implemented. Phase 3 adds complete single and bulk catalog editing, extensible styles/instructors/tags, and lesson-demo links. Phases 4–6 are not built. Auto-update is not active.
 
 ## Developer setup
 
@@ -134,6 +134,8 @@ Each phase ends with something runnable and is tested against a small set of sam
 **Phase 2 - Browse and search.** Thumbnail grid and list, full-text search over titles, notes, tags, and file names, filters (date range, type, style, instructor, level, tags, duration, source, favorites), sorting. _Done when:_ filtering a large catalog feels instant.
 
 **Phase 3 - Catalog editing.** Detail panel with all fields (title, type, style, instructors, level, event, date, tags, rating, favorite, notes); built-in style list plus user-added styles and instructors; tag autocomplete; bulk edit; linking a lesson to its demo. _Done when:_ a batch of videos can be fully tagged without leaving the keyboard.
+
+Phase 3 is complete. Select with click, Ctrl/⌘-click, or Shift-click; Ctrl/⌘A selects the visible page. Press **E** to edit the selection and **F** to toggle favorite on one selected video. In the editor, Tab follows field order, comma separates inline-created instructors and tags, Ctrl/⌘S saves, and Escape cancels. Bulk editing applies only fields touched in that editing session; added instructors/tags are merged with each video's existing values. Lesson-demo links are stored in the direction lesson → demo and displayed from both sides.
 
 **Phase 4 - Practice player.** Playback from source through a custom file protocol; speed 0.25x to 2x; mirror; A-B loop; frame step; searchable timestamp bookmarks; practice playlists. _Done when:_ smooth slow and mirrored playback from an external drive.
 

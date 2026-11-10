@@ -232,6 +232,79 @@ h2 {
   gap: 0.55rem;
   min-width: 0;
 }
+.video.selected {
+  outline: 2px solid #e07a5f;
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+.detail-panel {
+  position: fixed;
+  z-index: 10;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 92vw);
+  overflow: auto;
+  padding: 1rem;
+  box-sizing: border-box;
+  background: #211b18;
+  border-left: 1px solid #5a4d45;
+  box-shadow: -10px 0 30px rgb(0 0 0 / 35%);
+}
+.detail-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0.65rem 0;
+  color: #d9cfc6;
+}
+.detail-panel input,
+.detail-panel select,
+.detail-panel textarea {
+  font: inherit;
+  color: #f4efe9;
+  background: #2a2420;
+  border: 1px solid #5a4d45;
+  border-radius: 6px;
+  padding: 0.45rem;
+  color-scheme: dark;
+}
+.detail-panel textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+.detail-head,
+.detail-actions,
+.linked-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.detail-actions {
+  position: sticky;
+  bottom: -1rem;
+  background: #211b18;
+  padding: 1rem 0;
+}
+.detail-panel .primary {
+  background: #8c4a32;
+  border-color: #c4785a;
+}
+.shortcut-hint {
+  color: #c4b8ae;
+  font-size: 0.82rem;
+}
+.detail-panel fieldset {
+  border: 1px solid #5a4d45;
+  border-radius: 6px;
+  margin: 0.8rem 0;
+}
+.detail-panel [role='listbox'] {
+  list-style: none;
+  margin: 0.3rem 0;
+  padding: 0;
+}
 
 .select-video {
   position: absolute;

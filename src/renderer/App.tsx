@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { SetStateAction } from 'react';
+import type { MouseEvent, SetStateAction } from 'react';
 import type {
   AddLibrariesResult,
   AppHealth,
@@ -22,6 +22,7 @@ import {
   videoTypeLabels,
 } from '../shared/search';
 import { FilterBar } from './FilterBar';
+import { DetailPanel } from './DetailPanel';
 
 type ViewMode = 'grid' | 'list';
 type CatalogView = 'library' | 'excluded';
@@ -63,6 +64,8 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<ViewMode>('grid');
+  const [editingIds, setEditingIds] = useState<string[] | null>(null);
+  const selectionAnchor = useRef<number>(0);
   const notified = useRef(false);
   const listSeq = useRef(0);
   const metaSeq = useRef(0);
@@ -108,6 +111,49 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       active = false;
     };
   }, [api]);
+
+  useEffect(() => {
+    function key(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (
+        target instanceof Element &&
+        target.matches('input, textarea, select, [contenteditable=true]')
+      )
+        return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && videos) {
+        event.preventDefault();
+        setSelected(new Set(videos.map((v) => v.id)));
+        return;
+      }
+      if (event.key.toLowerCase() === 'e' && selected.size) {
+        event.preventDefault();
+        setEditingIds([...selected]);
+      }
+      if (event.key.toLowerCase() === 'f' && selected.size === 1) {
+        event.preventDefault();
+        const id = [...selected][0]!;
+        void api
+          .getVideoDetails(id)
+          .then((d) => api.updateVideo(id, { favorite: !d.favorite }))
+          .then(reload);
+      }
+      if (
+        ['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key) &&
+        videos?.length
+      ) {
+        event.preventDefault();
+        const delta = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1;
+        const next = Math.max(0, Math.min(videos.length - 1, selectionAnchor.current + delta));
+        selectionAnchor.current = next;
+        if (event.shiftKey) setSelected((current) => new Set([...current, videos[next]!.id]));
+        else setSelected(new Set([videos[next]!.id]));
+      }
+    }
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+    // reload intentionally reads the latest query and is recreated during render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, selected, videos]);
 
   const queryRef = useRef(query);
   queryRef.current = query;
@@ -248,6 +294,16 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       else next.add(id);
       return next;
     });
+  }
+
+  function selectVideo(id: string, index: number, event: MouseEvent): void {
+    if (event.shiftKey && videos) {
+      const from = Math.min(selectionAnchor.current, index),
+        to = Math.max(selectionAnchor.current, index);
+      setSelected(new Set(videos.slice(from, to + 1).map((v) => v.id)));
+    } else if (event.ctrlKey || event.metaKey) toggleOne(id);
+    else setSelected(new Set([id]));
+    selectionAnchor.current = index;
   }
 
   function toggleAll(ids: readonly string[]): void {
@@ -397,13 +453,22 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
                 Select all
               </label>
               {catalogView === 'library' ? (
-                <button
-                  type="button"
-                  onClick={() => void onExclude()}
-                  disabled={busy || selected.size === 0}
-                >
-                  Remove from library{selected.size > 0 ? ` (${selected.size})` : ''}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setEditingIds([...selected])}
+                    disabled={selected.size === 0}
+                  >
+                    Edit{selected.size > 1 ? ` (${selected.size})` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onExclude()}
+                    disabled={busy || selected.size === 0}
+                  >
+                    Remove from library{selected.size > 0 ? ` (${selected.size})` : ''}
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
@@ -448,18 +513,27 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
           ) : null}
           {videos && videos.length > 0 ? (
             <ul className={view === 'grid' ? 'video-grid' : 'video-list'}>
-              {videos.map((video) => (
+              {videos.map((video, index) => (
                 <VideoCard
                   key={video.id}
                   video={video}
                   selected={selected.has(video.id)}
                   onToggle={() => toggleOne(video.id)}
+                  onSelect={(event) => selectVideo(video.id, index, event)}
                 />
               ))}
             </ul>
           ) : null}
         </section>
       </div>
+      {editingIds ? (
+        <DetailPanel
+          api={api}
+          ids={editingIds}
+          onClose={() => setEditingIds(null)}
+          onSaved={reload}
+        />
+      ) : null}
       <footer>
         <p className="policy">
           References only. This app never moves, modifies, or deletes video files.
@@ -475,19 +549,25 @@ function VideoCard({
   video,
   selected,
   onToggle,
+  onSelect,
 }: {
   video: VideoListItem;
   selected: boolean;
   onToggle: () => void;
+  onSelect: (event: MouseEvent) => void;
 }) {
   const copies = video.locations.length;
   const details = catalogDetails(video);
   return (
-    <li className={video.presence === 'missing' ? 'video missing' : 'video'}>
+    <li
+      className={`${video.presence === 'missing' ? 'video missing' : 'video'}${selected ? ' selected' : ''}`}
+      onClick={onSelect}
+    >
       <label className="select-video">
         <input
           type="checkbox"
           checked={selected}
+          onClick={(event) => event.stopPropagation()}
           onChange={onToggle}
           aria-label={`Select ${video.displayTitle}`}
         />

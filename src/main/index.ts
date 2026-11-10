@@ -26,6 +26,14 @@ import { collectHealth } from './health';
 import { createLibraryService, type LibraryService } from './libraryService';
 import { catalogPath, openCatalog } from './db/catalog';
 import { handleThumbProtocol, registerThumbScheme } from './thumbsProtocol';
+import {
+  parseVideoUpdate,
+  searchText,
+  shortText,
+  valueKind,
+  videoId,
+  videoIds,
+} from './ipcValidation';
 
 if (started) app.quit();
 
@@ -126,6 +134,27 @@ function registerIpc(service: LibraryService): void {
   ipcMain.handle(IpcChannels.restoreVideos, (_event, ids: unknown): Promise<VideoChangeResult> => {
     return service.restoreVideos(stringIds(ids));
   });
+  ipcMain.handle(IpcChannels.getVideoDetails, (_event, id: unknown) =>
+    service.getVideoDetails(videoId(id)),
+  );
+  ipcMain.handle(IpcChannels.updateVideo, (_event, id: unknown, patch: unknown) =>
+    service.updateVideo(videoId(id), parseVideoUpdate(patch, false)),
+  );
+  ipcMain.handle(IpcChannels.bulkUpdateVideos, (_event, ids: unknown, patch: unknown) =>
+    service.bulkUpdateVideos(videoIds(ids), parseVideoUpdate(patch, true)),
+  );
+  ipcMain.handle(IpcChannels.searchCatalogValues, (_event, kind: unknown, query: unknown) =>
+    service.searchCatalogValues(valueKind(kind), searchText(query)),
+  );
+  ipcMain.handle(IpcChannels.createCatalogValue, (_event, kind: unknown, name: unknown) =>
+    service.createCatalogValue(valueKind(kind), shortText(name)),
+  );
+  ipcMain.handle(IpcChannels.linkLessonDemo, (_event, lesson: unknown, demo: unknown) =>
+    service.linkLessonDemo(videoId(lesson), videoId(demo)),
+  );
+  ipcMain.handle(IpcChannels.unlinkLessonDemo, (_event, lesson: unknown, demo: unknown) =>
+    service.unlinkLessonDemo(videoId(lesson), videoId(demo)),
+  );
 
   ipcMain.handle(IpcChannels.addLibraries, async (): Promise<AddLibrariesResult> => {
     const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];

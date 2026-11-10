@@ -11,6 +11,13 @@ export const IpcChannels = {
   countVideos: 'video:count',
   excludeVideos: 'video:exclude',
   restoreVideos: 'video:restore',
+  getVideoDetails: 'video:details',
+  updateVideo: 'video:update',
+  bulkUpdateVideos: 'video:bulk-update',
+  searchCatalogValues: 'catalog-values:search',
+  createCatalogValue: 'catalog-values:create',
+  linkLessonDemo: 'video-links:lesson-demo:add',
+  unlinkLessonDemo: 'video-links:lesson-demo:remove',
   scanProgress: 'library:scan-progress',
 } as const;
 
@@ -135,6 +142,49 @@ export type VideoQuery = {
 
 export type CatalogFacet = { id: string; name: string };
 
+export type CatalogValueKind = 'style' | 'instructor' | 'tag';
+export type CatalogValue = CatalogFacet & { builtin?: boolean };
+export type VideoLinkItem = { id: string; title: string; videoType: VideoType | null };
+export type VideoDetails = {
+  id: string;
+  displayTitle: string;
+  title: string | null;
+  videoType: VideoType | null;
+  style: CatalogValue | null;
+  instructors: CatalogValue[];
+  level: Level | null;
+  eventName: string | null;
+  eventDate: string | null;
+  tags: CatalogValue[];
+  rating: number | null;
+  favorite: boolean;
+  notes: string | null;
+  /** lesson_demo is stored lesson -> demo; this list is symmetric for display. */
+  lessonDemos: VideoLinkItem[];
+};
+
+export type VideoScalarPatch = {
+  title?: string | null;
+  videoType?: VideoType | null;
+  styleId?: string | null;
+  level?: Level | null;
+  eventName?: string | null;
+  eventDate?: string | null;
+  rating?: number | null;
+  favorite?: boolean;
+  notes?: string | null;
+};
+export type VideoUpdate = VideoScalarPatch & {
+  instructorIds?: string[];
+  tagIds?: string[];
+};
+export type BulkVideoUpdate = VideoScalarPatch & {
+  addInstructorIds?: string[];
+  removeInstructorIds?: string[];
+  addTagIds?: string[];
+  removeTagIds?: string[];
+};
+
 export type CatalogFacets = {
   styles: CatalogFacet[];
   instructors: CatalogFacet[];
@@ -206,6 +256,13 @@ export type DanceLibraryApi = {
   /** Hides catalog items. Does not delete or modify video files, and rescans keep them hidden. */
   excludeVideos: (videoIds: string[]) => Promise<VideoChangeResult>;
   restoreVideos: (videoIds: string[]) => Promise<VideoChangeResult>;
+  getVideoDetails: (videoId: string) => Promise<VideoDetails>;
+  updateVideo: (videoId: string, patch: VideoUpdate) => Promise<VideoDetails>;
+  bulkUpdateVideos: (videoIds: string[], patch: BulkVideoUpdate) => Promise<VideoChangeResult>;
+  searchCatalogValues: (kind: CatalogValueKind, query: string) => Promise<CatalogValue[]>;
+  createCatalogValue: (kind: CatalogValueKind, name: string) => Promise<CatalogValue>;
+  linkLessonDemo: (lessonId: string, demoId: string) => Promise<void>;
+  unlinkLessonDemo: (lessonId: string, demoId: string) => Promise<void>;
   scanLibrary: (libraryId: string) => Promise<ScanSummary>;
   scanAll: () => Promise<ScanSummary>;
   onScanProgress: (listener: (progress: ScanProgress) => void) => () => void;

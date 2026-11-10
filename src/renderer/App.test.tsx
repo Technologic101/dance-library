@@ -102,6 +102,43 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
     countVideos: async () => ({ visible: 2, excluded: 0 }),
     excludeVideos: async () => ({ changed: 1, requested: 1 }),
     restoreVideos: async () => ({ changed: 1, requested: 1 }),
+    getVideoDetails: async (id) => ({
+      id,
+      displayTitle: present.displayTitle,
+      title: null,
+      videoType: null,
+      style: null,
+      instructors: [],
+      level: null,
+      eventName: null,
+      eventDate: null,
+      tags: [],
+      rating: null,
+      favorite: false,
+      notes: null,
+      lessonDemos: [],
+    }),
+    updateVideo: async (id) => ({
+      id,
+      displayTitle: present.displayTitle,
+      title: null,
+      videoType: null,
+      style: null,
+      instructors: [],
+      level: null,
+      eventName: null,
+      eventDate: null,
+      tags: [],
+      rating: null,
+      favorite: false,
+      notes: null,
+      lessonDemos: [],
+    }),
+    bulkUpdateVideos: async (ids) => ({ changed: ids.length, requested: ids.length }),
+    searchCatalogValues: async () => [],
+    createCatalogValue: async (_kind, name) => ({ id: name.toLowerCase(), name }),
+    linkLessonDemo: async () => {},
+    unlinkLessonDemo: async () => {},
     addLibraries: async () => ({ added: [library], skipped: [], scan: null }),
     removeLibrary: async () => ({ ok: true }),
     scanLibrary: async () => ({
@@ -191,6 +228,39 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select gone.mp4' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove from library (2)' }));
     await waitFor(() => expect(excludeVideos).toHaveBeenCalledWith(['vid-1', 'vid-2']));
+  });
+
+  it('opens the editor from the keyboard and saves without the mouse', async () => {
+    const updateVideo = vi.fn(async (id) => ({
+      id,
+      displayTitle: 'My lesson',
+      title: 'My lesson',
+      videoType: 'lesson' as const,
+      style: null,
+      instructors: [],
+      level: null,
+      eventName: null,
+      eventDate: '2024-03-10',
+      tags: [],
+      rating: 4,
+      favorite: false,
+      notes: null,
+      lessonDemos: [],
+    }));
+    api({ updateVideo });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select lesson-basic.mp4' }));
+    fireEvent.keyDown(window, { key: 'e' });
+    const title = await screen.findByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, { target: { value: 'My lesson' } });
+    fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(updateVideo).toHaveBeenCalledWith(
+        'vid-1',
+        expect.objectContaining({ title: 'My lesson', eventDate: null }),
+      ),
+    );
   });
 
   it('applies a library refresh even when a newer search replaces the page', async () => {
