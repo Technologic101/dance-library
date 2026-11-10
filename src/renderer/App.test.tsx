@@ -7,6 +7,7 @@ import type {
   BulkVideoUpdate,
   CatalogFacets,
   LibrarySummary,
+  VideoDetails,
   VideoListItem,
 } from '../shared/api';
 import { formatVideoMeta } from '../shared/format';
@@ -97,6 +98,25 @@ const emptyFacets: CatalogFacets = {
   tags: [],
   libraries: [{ id: 'lib', label: 'dance' }],
 };
+
+function apiDetails(id: string): VideoDetails {
+  return {
+    id,
+    displayTitle: present.displayTitle,
+    title: null,
+    videoType: null,
+    style: null,
+    instructors: [],
+    level: null,
+    eventName: null,
+    eventDate: null,
+    tags: [],
+    rating: null,
+    favorite: false,
+    notes: null,
+    lessonDemos: [],
+  };
+}
 
 function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
   const notify = vi.fn(async () => {});
@@ -270,6 +290,48 @@ describe('App', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
+  it('clears a single video date as null', async () => {
+    const updateVideo = vi.fn(async (id: string) => ({
+      ...apiDetails(id),
+      eventDate: null,
+    }));
+    api({
+      updateVideo,
+      getVideoDetails: async (id) => ({
+        ...(await apiDetails(id)),
+        eventDate: '2024-03-10',
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const date = await screen.findByLabelText('Date');
+    fireEvent.change(date, { target: { value: '' } });
+    fireEvent.keyDown(date.closest('aside')!, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(updateVideo).toHaveBeenCalledWith('vid-1', { eventDate: null }));
+  });
+
+  it('clears a single video style as null', async () => {
+    const updateVideo = vi.fn(async (id: string) => apiDetails(id));
+    api({
+      updateVideo,
+      getVideoDetails: async (id) => ({
+        ...(await apiDetails(id)),
+        style: { id: 'zouk', name: 'Zouk' },
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const editor = await screen.findByRole('dialog');
+    const style = within(editor).getByRole('combobox', { name: 'Style' });
+    fireEvent.change(style, { target: { value: '' } });
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(updateVideo).toHaveBeenCalledWith('vid-1', { styleId: null }));
+  });
+
   it('shows save errors in StrictMode and restores the save button', async () => {
     api({ updateVideo: vi.fn(async () => Promise.reject(new Error('Catalog is locked'))) });
     render(
@@ -408,13 +470,22 @@ describe('App', () => {
     expect((tags as HTMLInputElement).value).toBe('Zouk');
   });
 
-  it('lets Escape close the editor from a combo with no visible suggestions', async () => {
+  it('lets Escape close the editor when a combo only has stale suggestions', async () => {
+    api({
+      searchCatalogValues: async (_kind, query) =>
+        query === 'Zo' ? [{ id: 'zouk', name: 'Zouk' }] : [],
+    });
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'e' });
     const editor = await screen.findByRole('dialog');
-    fireEvent.keyDown(within(editor).getByRole('combobox', { name: 'Style' }), { key: 'Escape' });
+    const style = within(editor).getByRole('combobox', { name: 'Style' });
+    fireEvent.change(style, { target: { value: 'Zo' } });
+    expect(await screen.findByRole('option', { name: 'Zouk' })).toBeTruthy();
+    fireEvent.change(style, { target: { value: 'Zou' } });
+    expect(screen.queryByRole('option', { name: 'Zouk' })).toBeNull();
+    fireEvent.keyDown(style, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
@@ -555,6 +626,73 @@ describe('App', () => {
     const patch = bulkUpdateVideos.mock.calls[0]?.[1];
     expect(patch).not.toHaveProperty('styleId');
     expect(patch).not.toHaveProperty('eventDate');
+  });
+
+  it('keeps typed-empty shared bulk values unchanged without joining a replacement style', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({
+      bulkUpdateVideos,
+      getVideoDetails: async (id) => ({
+        ...(await apiDetails(id)),
+        style: { id: 'zouk', name: 'Zouk' },
+        eventDate: '2024-05-01',
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+
+    const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
+    const style = within(editor).getByRole('combobox', { name: 'Style' });
+    fireEvent.change(style, { target: { value: '' } });
+    expect((style as HTMLInputElement).value).toBe('');
+    fireEvent.click(within(editor).getByRole('button', { name: 'Leave style unchanged' }));
+    expect((style as HTMLInputElement).value).toBe('Zouk');
+    fireEvent.change(style, { target: { value: '' } });
+    fireEvent.change(style, { target: { value: 'Samba' } });
+    expect((style as HTMLInputElement).value).toBe('Samba');
+
+    const date = within(editor).getByLabelText('Date');
+    fireEvent.change(date, { target: { value: '' } });
+    expect((date as HTMLInputElement).value).toBe('');
+    fireEvent.click(within(editor).getByRole('button', { name: 'Leave date unchanged' }));
+    expect((date as HTMLInputElement).value).toBe('2024-05-01');
+    fireEvent.change(date, { target: { value: '' } });
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
+        styleId: 'samba',
+      }),
+    );
+  });
+
+  it('shows armed bulk-clear hints and saves null style and date values', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({ bulkUpdateVideos });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
+    fireEvent.click(within(editor).getByRole('button', { name: 'Clear style on all' }));
+    fireEvent.click(within(editor).getByRole('button', { name: 'Clear date on all' }));
+    expect(within(editor).getAllByText('Will be cleared on 2 videos')).toHaveLength(2);
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
+        styleId: null,
+        eventDate: null,
+      }),
+    );
   });
 
   it('keeps the edited video selected after save so ArrowDown selects the next video', async () => {

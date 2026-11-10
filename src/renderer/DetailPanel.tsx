@@ -34,6 +34,9 @@ export function DetailPanel({
   const eventInput = useRef<HTMLInputElement>(null);
   const dateInput = useRef<HTMLInputElement>(null);
   const notesInput = useRef<HTMLTextAreaElement>(null);
+  const dateId = useId();
+  const styleClearHintId = useId();
+  const dateClearHintId = useId();
   const panel = useRef<HTMLElement>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -75,6 +78,14 @@ export function DetailPanel({
       return next;
     });
     queueMicrotask(() => input?.focus());
+  }
+  function leaveTypedEmpty(key: string) {
+    setValues((current) => ({ ...current, [key]: '' }));
+    setDirty((current) => {
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
   }
   async function valueIds(
     kind: CatalogValueKind,
@@ -265,15 +276,19 @@ export function DetailPanel({
         inputRef={styleInput}
         value={String(values.styleName ?? '')}
         placeholder={bulk && !dirty.has('styleName') ? mixed : ''}
-        onChange={(v) =>
-          bulk && !v ? leaveUnchanged('styleName', styleInput.current) : set('styleName', v)
+        ariaDescribedBy={
+          bulk && dirty.has('styleName') && values.styleName === null ? styleClearHintId : undefined
         }
+        onChange={(v) => (bulk && !v ? leaveTypedEmpty('styleName') : set('styleName', v))}
       />
       {bulk ? (
         <div className="field-actions">
           <button
             type="button"
-            disabled={!dirty.has('styleName')}
+            disabled={
+              !dirty.has('styleName') &&
+              values.styleName === (commonValues(details).styleName ?? '')
+            }
             onClick={() => leaveUnchanged('styleName', styleInput.current)}
           >
             Leave style unchanged
@@ -281,6 +296,9 @@ export function DetailPanel({
           <button type="button" onClick={() => set('styleName', null)}>
             Clear style on all
           </button>
+          {dirty.has('styleName') && values.styleName === null ? (
+            <small id={styleClearHintId}>Will be cleared on {ids.length} videos</small>
+          ) : null}
         </div>
       ) : null}
       {bulk ? (
@@ -335,17 +353,22 @@ export function DetailPanel({
         ) : null}
       </div>
       <div className="combo-field">
-        <label htmlFor="catalog-date">Date</label>
+        <label htmlFor={dateId}>Date</label>
         <input
-          id="catalog-date"
+          id={dateId}
           ref={dateInput}
           type="date"
           value={String(values.eventDate ?? '')}
           aria-label={`Date${bulk && !dirty.has('eventDate') && values.eventDate === undefined ? ' (mixed or unchanged)' : ''}`}
+          aria-describedby={
+            bulk && dirty.has('eventDate') && values.eventDate === null
+              ? dateClearHintId
+              : undefined
+          }
           onChange={(e) =>
             bulk && !e.target.value
-              ? leaveUnchanged('eventDate', dateInput.current)
-              : set('eventDate', e.target.value)
+              ? leaveTypedEmpty('eventDate')
+              : set('eventDate', e.target.value || null)
           }
         />
         {bulk && !dirty.has('eventDate') && values.eventDate === undefined ? (
@@ -355,7 +378,10 @@ export function DetailPanel({
           <div className="field-actions">
             <button
               type="button"
-              disabled={!dirty.has('eventDate')}
+              disabled={
+                !dirty.has('eventDate') &&
+                values.eventDate === (commonValues(details).eventDate ?? '')
+              }
               onClick={() => leaveUnchanged('eventDate', dateInput.current)}
             >
               Leave date unchanged
@@ -363,6 +389,9 @@ export function DetailPanel({
             <button type="button" onClick={() => set('eventDate', null)}>
               Clear date on all
             </button>
+            {dirty.has('eventDate') && values.eventDate === null ? (
+              <small id={dateClearHintId}>Will be cleared on {ids.length} videos</small>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -477,6 +506,7 @@ function CatalogCombo({
   value,
   placeholder = '',
   inputRef,
+  ariaDescribedBy,
   onChange,
 }: {
   api: DanceLibraryApi;
@@ -485,6 +515,7 @@ function CatalogCombo({
   value: string;
   placeholder?: string;
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  ariaDescribedBy?: string;
   onChange: (v: string) => void;
 }) {
   const id = useId(),
@@ -537,6 +568,7 @@ function CatalogCombo({
         aria-autocomplete="list"
         aria-expanded={optionsOpen}
         aria-controls={id}
+        aria-describedby={ariaDescribedBy}
         aria-activedescendant={optionsOpen && active >= 0 ? `${id}-${active}` : undefined}
         value={value}
         placeholder={placeholder || 'Type a name; comma adds another'}
