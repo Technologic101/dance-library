@@ -189,6 +189,7 @@ export function repairSearchIndex(db: Database.Database): void {
       dropSearchObjects(db);
       installSearchSchema(db);
       db.exec(SEARCH_BACKFILL_SQL);
+      normalizeStoredCaptureDates(db);
     });
     rebuildLegacy();
     return;

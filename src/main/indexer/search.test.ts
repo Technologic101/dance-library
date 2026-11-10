@@ -5,7 +5,13 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openCatalog } from '../db/catalog';
 import { repairSearchIndex } from '../db/searchIndex';
-import { localDayBounds } from '../../shared/search';
+import {
+  localDayBounds,
+  parseVideoQuery,
+  toVideoQuery,
+  emptyBrowseFilters,
+} from '../../shared/search';
+import { videoListQuery } from './videoQuery';
 import { createRepository } from './repository';
 
 const directories: string[] = [];
@@ -400,6 +406,49 @@ describe('catalog search', () => {
     ).toEqual(['next']);
   });
 
+  it('filters date-only rows after the renderer query passes through the IPC parser', () => {
+    const db = open();
+    addVideo(db, { id: 'old-day', capturedAt: '2019-03-15' });
+    addVideo(db, { id: 'new-day', capturedAt: '2025-02-01' });
+    const query = parseVideoQuery(
+      toVideoQuery({ ...emptyBrowseFilters(), capturedFrom: '2025-01-01' }, false),
+    );
+
+    expect(
+      createRepository(db)
+        .listVideoSummaries(query)
+        .map((item) => item.id),
+    ).toEqual(['new-day']);
+  });
+
+  it('fails closed for date-only rows if an instant bound lacks its day bound', () => {
+    const db = open();
+    addVideo(db, { id: 'date-only', capturedAt: '2025-02-01' });
+    const bounds = localDayBounds('2025-01-01', undefined);
+
+    expect(createRepository(db).listVideoSummaries({ capturedFrom: bounds.from })).toEqual([]);
+  });
+
+  it('uses the capture-date index for instant and date-only bounds', () => {
+    const db = open();
+    const bounds = localDayBounds('2025-01-01', '2025-01-31');
+    const query = videoListQuery({
+      capturedFrom: bounds.from,
+      capturedTo: bounds.toExclusive,
+      capturedFromDay: '2025-01-01',
+      capturedToDay: '2025-01-31',
+    });
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${query.countSql}`).all(query.params) as {
+      detail: string;
+    }[];
+    const searches = plan
+      .map((row) => row.detail)
+      .filter((detail) => /SEARCH videos USING .*videos_captured/.test(detail));
+
+    expect(searches).toHaveLength(2);
+    expect(plan.map((row) => row.detail).join('\n')).not.toMatch(/SCAN videos$/m);
+  });
+
   it('treats duration preset edges as exclusive', () => {
     const db = open();
     addLibrary(db, 'lib', 'dance');
@@ -512,20 +561,33 @@ describe('catalog search', () => {
     ).toEqual(['vid']);
   });
 
-  it('updates the search index by rowid, not by scanning it', () => {
+  it('defines every search trigger with keyed FTS updates', () => {
     const db = open();
-    addLibrary(db, 'lib', 'dance');
-    addVideo(db, { id: 'v0', title: 'Clip', libraryId: 'lib', filename: 'clip.mp4' });
-    const plan = db
+    const triggers = db
       .prepare(
-        `EXPLAIN QUERY PLAN UPDATE videos_fts SET title = 'x'
-         WHERE rowid = (SELECT rowid FROM video_search_keys WHERE video_id = 'v0')`,
+        `SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND name LIKE '%fts%'
+         ORDER BY name`,
       )
-      .all() as { detail: string }[];
-    const planText = plan.map((row) => row.detail).join('\n');
-    expect(planText).toMatch(/SEARCH video_search_keys/);
-    expect(planText).toMatch(/videos_fts VIRTUAL TABLE INDEX 0:=/);
-    expect(planText).not.toMatch(/SCAN videos_fts VIRTUAL TABLE(?! INDEX)/);
+      .all() as { name: string; sql: string }[];
+    expect(triggers).toHaveLength(10);
+    for (const trigger of triggers) {
+      for (const statement of trigger.sql.matchAll(
+        /(?:UPDATE|DELETE FROM) videos_fts[\s\S]*?;/gi,
+      )) {
+        expect(statement[0], trigger.name).toMatch(/(?:WHERE|AND) rowid\s*(?:=|IN)\s*\(/i);
+        expect(statement[0], trigger.name).toMatch(/video_search_keys/i);
+      }
+    }
+  });
+
+  it('limits the page before decorating result rows', () => {
+    const { sql } = videoListQuery({ sort: 'newest', limit: 48 });
+    const pageEnd = sql.indexOf(')\n    SELECT');
+    expect(sql.indexOf('WITH page AS')).toBeGreaterThanOrEqual(0);
+    expect(sql.indexOf('LIMIT 48 OFFSET 0')).toBeLessThan(pageEnd);
+    expect(sql.indexOf('json_group_array')).toBeGreaterThan(pageEnd);
+    expect(sql.slice(0, pageEnd)).not.toContain('SELECT loc2.filename');
   });
 
   it('sorts an unfiltered page of 30,000 titled videos without decorating every row slowly', () => {
@@ -586,6 +648,10 @@ describe('catalog search', () => {
       `INSERT INTO videos (id, title, created_at, updated_at) VALUES ('vid', 'Kizomba class', 't', 't')`,
     ).run();
     db.prepare(
+      `UPDATE videos SET captured_at = '2024-06-01T12:30:00', captured_at_source = 'filename'
+       WHERE id = 'vid'`,
+    ).run();
+    db.prepare(
       `INSERT INTO video_locations (
          id, video_id, library_id, path, filename, presence, created_at, updated_at
        ) VALUES ('loc', 'vid', 'lib', '/dance/lib/copy.mp4', 'copy.mp4', 'present', 't', 't')`,
@@ -596,5 +662,8 @@ describe('catalog search', () => {
         .listVideoSummaries({ text: 'copy' })
         .map((item) => item.id),
     ).toEqual(['vid']);
+    expect(
+      db.prepare(`SELECT captured_at AS capturedAt FROM videos WHERE id = 'vid'`).get(),
+    ).toMatchObject({ capturedAt: expect.stringMatching(/Z$/) });
   });
 });

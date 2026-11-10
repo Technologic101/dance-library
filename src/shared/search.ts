@@ -149,8 +149,12 @@ export function parseVideoQuery(value: unknown): VideoQuery {
   }
   const from = instant(source.capturedFrom);
   const to = instant(source.capturedTo);
+  const fromDay = day(source.capturedFromDay);
+  const toDay = day(source.capturedToDay);
   if (from) query.capturedFrom = from;
   if (to) query.capturedTo = to;
+  if (fromDay) query.capturedFromDay = fromDay;
+  if (toDay) query.capturedToDay = toDay;
   const types = enums(source.videoTypes, videoTypes);
   const pickedLevels = enums(source.levels, levels);
   const styles = ids(source.styleIds);

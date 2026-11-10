@@ -64,6 +64,22 @@ describe('search query', () => {
     });
   });
 
+  it('keeps local calendar-day bounds through the IPC parser', () => {
+    const filters = {
+      ...emptyBrowseFilters(),
+      capturedFrom: '2025-01-01',
+      capturedTo: '2025-01-31',
+    };
+    const wireQuery = toVideoQuery(filters, false);
+
+    expect(parseVideoQuery(wireQuery)).toMatchObject({
+      capturedFrom: wireQuery.capturedFrom,
+      capturedTo: wireQuery.capturedTo,
+      capturedFromDay: '2025-01-01',
+      capturedToDay: '2025-01-31',
+    });
+  });
+
   it("turns a local day into that date's own midnight", () => {
     expect(localDayBounds('2024-06-30', '2024-06-30')).toEqual({
       from: new Date(2024, 5, 30).toISOString(),

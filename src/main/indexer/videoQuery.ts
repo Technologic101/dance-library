@@ -31,18 +31,18 @@ export function videoListQuery(query: VideoQuery): {
     if (query.capturedTo) params.capturedTo = query.capturedTo;
     if (query.capturedFromDay) params.capturedFromDay = query.capturedFromDay;
     if (query.capturedToDay) params.capturedToDay = query.capturedToDay;
-    where.push(`(
-      (
-        instr(COALESCE(v.captured_at, ''), 'T') > 0
-        AND (${query.capturedFrom ? 'v.captured_at >= @capturedFrom' : '1'})
-        AND (${query.capturedTo ? 'v.captured_at < @capturedTo' : '1'})
-      )
-      OR (
-        v.captured_at IS NOT NULL
-        AND instr(v.captured_at, 'T') = 0
-        AND (${query.capturedFromDay ? 'v.captured_at >= @capturedFromDay' : '1'})
-        AND (${query.capturedToDay ? 'v.captured_at <= @capturedToDay' : '1'})
-      )
+    const instantBounds = ["instr(COALESCE(captured_at, ''), 'T') > 0"];
+    if (query.capturedFrom) instantBounds.push('captured_at >= @capturedFrom');
+    if (query.capturedTo) instantBounds.push('captured_at < @capturedTo');
+    const dayBounds = ['captured_at IS NOT NULL', "instr(captured_at, 'T') = 0"];
+    if (query.capturedFromDay) dayBounds.push('captured_at >= @capturedFromDay');
+    else if (query.capturedFrom) dayBounds.push('0');
+    if (query.capturedToDay) dayBounds.push('captured_at <= @capturedToDay');
+    else if (query.capturedTo) dayBounds.push('0');
+    where.push(`v.rowid IN (
+      SELECT rowid FROM videos WHERE ${instantBounds.join(' AND ')}
+      UNION
+      SELECT rowid FROM videos WHERE ${dayBounds.join(' AND ')}
     )`);
   }
   addIn(where, params, 'v.video_type', query.videoTypes, 'type');
@@ -86,10 +86,8 @@ export function videoListQuery(query: VideoQuery): {
       ? `LIMIT ${Math.trunc(query.limit)} OFFSET ${Math.trunc(query.offset ?? 0)}`
       : '';
   const hasText = Boolean(match);
-  const pageSql = `
-    SELECT
-      v.id AS id,
-      COALESCE(NULLIF(TRIM(v.title), ''), (
+  const sortsByTitle = query.sort === 'title' || query.sort === 'title-desc';
+  const displayTitle = `COALESCE(NULLIF(TRIM(v.title), ''), (
         SELECT loc2.filename
         FROM video_locations loc2
         WHERE loc2.video_id = v.id
@@ -97,7 +95,11 @@ export function videoListQuery(query: VideoQuery): {
                  loc2.filename COLLATE NOCASE,
                  loc2.id
         LIMIT 1
-      ), '') AS displayTitle,
+      ), '')`;
+  const pageSql = `
+    SELECT
+      v.id AS id,
+      ${sortsByTitle ? `${displayTitle} AS displayTitle,` : ''}
       v.captured_at AS capturedAt,
       v.duration_ms AS durationMs
       ${hasText ? ', fts.rank AS rank' : ''}
@@ -126,7 +128,7 @@ export function videoListQuery(query: VideoQuery): {
       v.level,
       v.favorite,
       MAX(s.name) AS styleName,
-      page.displayTitle AS displayTitle,
+      ${sortsByTitle ? 'page.displayTitle' : displayTitle} AS displayTitle,
       COALESCE((
         SELECT json_group_array(name) FROM (
           SELECT i.name AS name

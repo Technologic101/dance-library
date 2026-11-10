@@ -62,13 +62,17 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [view, setView] = useState<ViewMode>('grid');
   const notified = useRef(false);
   const listSeq = useRef(0);
+  const metaSeq = useRef(0);
   const debouncedText = useDebounced(filters.text, 150);
-  const filterKey = `${catalogView}|${debouncedText}|${filters.capturedFrom}|${filters.capturedTo}|${filters.videoType}|${filters.styleId}|${filters.instructorId}|${filters.level}|${filters.tagId}|${filters.duration}|${filters.libraryId}|${filters.favoriteOnly}|${filters.sort}`;
+  const filterKey = JSON.stringify({
+    catalogView,
+    filters: { ...filters, text: debouncedText },
+  });
   const query = useMemo(() => {
     const next = toVideoQuery({ ...filters, text: debouncedText }, catalogView === 'excluded');
     next.offset = page * videoPageSize;
     return next;
-    // filterKey omits the live search text so a keystroke does not query.
+    // filterKey replaces the live search text with its debounced value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterKey, page]);
 
@@ -91,18 +95,15 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   queryRef.current = query;
 
   useEffect(() => {
-    setPage(0);
-  }, [filterKey]);
-
-  useEffect(() => {
     let active = true;
+    const metadataSeq = ++metaSeq.current;
     Promise.all([
       api.listLibraries(),
       api.countVideos(),
       api.listFacets({ excluded: catalogView === 'excluded' }),
     ])
       .then(([nextLibraries, nextCounts, nextFacets]) => {
-        if (!active) return;
+        if (!active || metadataSeq !== metaSeq.current) return;
         setLibraries(nextLibraries);
         setCounts(nextCounts);
         setFacets(nextFacets);
@@ -149,6 +150,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
 
   async function reload(): Promise<void> {
     const seq = ++listSeq.current;
+    const metadataSeq = ++metaSeq.current;
     const current = queryRef.current;
     const [nextLibraries, nextCounts, nextFacets, pageResult] = await Promise.all([
       api.listLibraries(),
@@ -156,16 +158,19 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       api.listFacets({ excluded: current.excluded === true }),
       api.listVideos(current),
     ]);
-    setLibraries(nextLibraries);
-    setCounts(nextCounts);
-    setFacets(nextFacets);
-    setFilters((filtersNow) => dropMissingFacets(filtersNow, nextFacets));
+    if (metadataSeq === metaSeq.current) {
+      setLibraries(nextLibraries);
+      setCounts(nextCounts);
+      setFacets(nextFacets);
+      setFilters((filtersNow) => dropMissingFacets(filtersNow, nextFacets));
+    }
     if (seq !== listSeq.current) return;
     setVideos(pageResult.items);
     setMatchTotal(pageResult.total);
     setLoadError(null);
     setSelected(new Set());
-    const nextPage = pageAfterShrink(page, pageResult.total, videoPageSize);
+    const sentPage = Math.floor((current.offset ?? 0) / videoPageSize);
+    const nextPage = pageAfterShrink(sentPage, pageResult.total, videoPageSize);
     if (pageResult.items.length === 0 && nextPage != null) setPage(nextPage);
   }
 
@@ -214,6 +219,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
 
   function showCatalog(view: CatalogView): void {
     setCatalogView(view);
+    setPage(0);
     setLoadError(null);
   }
 
@@ -353,7 +359,14 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             </div>
           ) : null}
           {notice ? <p role="status">{notice}</p> : null}
-          <FilterBar facets={facets} value={filters} onChange={setFilters} />
+          <FilterBar
+            facets={facets}
+            value={filters}
+            onChange={(next) => {
+              setFilters(next);
+              setPage(0);
+            }}
+          />
           {loadError ? <p role="alert">{loadError}</p> : null}
           {videos === null && !loadError ? <p role="status">Checking the runtime…</p> : null}
           {videos && videos.length > 0 ? (
