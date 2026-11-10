@@ -42,7 +42,14 @@ export type ScanDeps = {
   describePath: (filePath: string, mounts: readonly Mount[]) => VolumeLocation | null;
   isDirectory: (filePath: string) => boolean;
   exists: (filePath: string) => boolean;
+  /** True only when two spellings resolve to the same directory entry. */
+  sameFilePathAlias?: (left: string, right: string) => Promise<boolean>;
   readDirectory: (dir: string) => Promise<boolean>;
+  /**
+   * True when the directory has a real entry, false when it is empty or only
+   * has system junk, null when it could not be read.
+   */
+  directoryHasEntries: (dir: string) => Promise<boolean | null>;
   walkVideos: (root: string) => AsyncIterable<string>;
   /** When set, unreadable directories are not treated as missing files. */
   walkLibrary?: (root: string) => Promise<{
@@ -136,32 +143,41 @@ export async function scanLibrary(
     existsDir: (candidate) => deps.isDirectory(candidate),
     describe: (candidate) => deps.describePath(candidate, mounts),
   });
-  if (
-    deps.isDirectory(library.path) &&
-    (resolved.availability === 'offline' || mounts.length === 0)
-  ) {
-    const sample = repo.locationsForLibrary(library.id).slice(0, 5);
-    let matchedSample = 0;
-    for (const location of sample) {
-      if (!deps.exists(location.path)) continue;
-      try {
-        const stat = await deps.stat(location.path);
-        if (location.sizeBytes == null || stat.size === location.sizeBytes) matchedSample += 1;
-      } catch {
-        // A path that cannot be stated is not evidence this is the same disk.
-      }
+  const savedVolume = {
+    path: library.path,
+    volumeId: isStableVolumeId(library.volumeId) ? library.volumeId : null,
+    volumeRelPath: library.volumeRelPath,
+  };
+  if (mounts.length === 0 && deps.isDirectory(library.path)) {
+    const rootState = await deps.directoryHasEntries(library.path);
+    if (rootState === null) {
+      const message = 'The folder could not be read. Catalog entries were left unchanged.';
+      repo.markUnreadable(library.id, message, deps.now());
+      summary.errors = 1;
+      emit(options.onProgress, {
+        state: 'error',
+        libraryId: library.id,
+        libraryLabel: library.label,
+        discovered: 0,
+        completed: 0,
+        currentFile: null,
+        message,
+      });
+      return summary;
     }
-    const filesStillThere = sample.length === 0 || matchedSample > 0;
-    const savedVolume = {
-      path: library.path,
-      volumeId: isStableVolumeId(library.volumeId) ? library.volumeId : null,
-      volumeRelPath: library.volumeRelPath,
-    };
-    // An empty mount listing is "unknown", not proof the disk is attached.
-    // A leftover mount-point directory must still have its files.
-    if (mounts.length === 0 && !filesStillThere) {
-      resolved = { availability: 'offline', ...savedVolume };
-    } else if (resolved.availability === 'offline' && filesStillThere) {
+    if (!rootState) {
+      if (repo.countLocations(library.id) > 0) {
+        resolved = { availability: 'offline', ...savedVolume };
+      }
+    } else {
+      const verdict = await rootVolumeVerdict(library.volumeId, library.path, deps);
+      const proven =
+        verdict === 'match' ||
+        (verdict === 'unknown' && (await filesStillThere(repo, deps, library.id)));
+      if (!proven) resolved = { availability: 'offline', ...savedVolume };
+    }
+  } else if (resolved.availability === 'offline' && deps.isDirectory(library.path)) {
+    if (await filesStillThere(repo, deps, library.id)) {
       resolved = { availability: 'online', ...savedVolume };
     }
   }
@@ -206,6 +222,13 @@ export async function scanLibrary(
   summary.discovered = files.length;
 
   const seen = new Set<string>();
+  const presentAtStart =
+    mounts.length === 0
+      ? repo
+          .locationsForLibrary(library.id)
+          .filter((location) => location.presence === 'present')
+          .map((location) => location.id)
+      : [];
   for (const [index, file] of files.entries()) {
     const filename = fileNameOf(file);
     emit(
@@ -238,16 +261,30 @@ export async function scanLibrary(
     await yieldNow();
   }
 
-  summary.missing = markUnseen(
-    repo,
-    deps,
-    options.thumbsDir,
-    library.id,
-    resolved.path,
-    walked,
-    seen,
-  );
+  const refuseMissing =
+    mounts.length === 0 &&
+    mostPresentWouldBeMissing(presentAtStart, seen, walked.unreadable, repo, library.id);
+  if (!refuseMissing) {
+    summary.missing = markUnseen(
+      repo,
+      deps,
+      options.thumbsDir,
+      library.id,
+      resolved.path,
+      walked,
+      seen,
+    );
+  } else {
+    summary.errors += 1;
+  }
   repo.finishScan(library.id, deps.now());
+  if (refuseMissing) {
+    repo.markUnreadable(
+      library.id,
+      'The drive listing was empty, so files were not marked missing.',
+      deps.now(),
+    );
+  }
   emit(options.onProgress, {
     state: 'done',
     libraryId: library.id,
@@ -295,7 +332,15 @@ async function indexFile(
   if (stat.size === 0) {
     if (location) {
       repo.updateLocation(
-        locationWrite(location.id, location.videoId, input, stat, filename, deps),
+        locationWrite(
+          location.id,
+          location.videoId,
+          input,
+          stat,
+          filename,
+          deps,
+          location.volumeId,
+        ),
       );
       input.seen.add(location.id);
     }
@@ -304,7 +349,18 @@ async function indexFile(
 
   const currentVideo = location ? repo.getVideo(location.videoId) : null;
   if (location && currentVideo && canSkipProbe(location, currentVideo, stat, deps)) {
-    repo.updateLocation(locationWrite(location.id, location.videoId, input, stat, filename, deps));
+    const write = locationWrite(
+      location.id,
+      location.videoId,
+      input,
+      stat,
+      filename,
+      deps,
+      location.volumeId,
+    );
+    // Avoid an autocommit for every unchanged file. This is particularly
+    // expensive on Windows; seen already protects it from missing-marking.
+    if (locationNeedsWrite(location, write)) repo.updateLocation(write);
     input.seen.add(location.id);
     return changedLocation(location, input.filePath, input.libraryId) ? 'updated' : 'unchanged';
   }
@@ -426,8 +482,9 @@ async function indexFile(
     const moved = !location
       ? claimGoneLocation(repo, deps, videoId, input.seen, input.libraryId)
       : null;
-    const locationId = location?.id ?? moved?.id ?? randomUUID();
-    const write = locationWrite(locationId, videoId, input, stat, filename, deps);
+    const kept = location ?? moved;
+    const locationId = kept?.id ?? randomUUID();
+    const write = locationWrite(locationId, videoId, input, stat, filename, deps, kept?.volumeId);
     if (location || moved) repo.updateLocation(write);
     else repo.insertLocation(write);
     input.seen.add(locationId);
@@ -571,10 +628,17 @@ async function identityLocation(
   // spelling. The inode matches, so rewrite that row instead of adding one.
   for (const row of rows) {
     if (seen.has(row.id) || pathsEqual(row.path, filePath)) continue;
+    if (
+      row.libraryId !== libraryId ||
+      !isCaseAlias(row.path, filePath) ||
+      !deps.sameFilePathAlias ||
+      !(await deps.sameFilePathAlias(row.path, filePath))
+    ) {
+      continue;
+    }
     try {
       const alias = await deps.stat(row.path);
       if (
-        row.libraryId === libraryId &&
         alias.fileId &&
         alias.fileId === stat.fileId &&
         alias.volumeId === stat.volumeId &&
@@ -587,6 +651,78 @@ async function identityLocation(
     }
   }
   return null;
+}
+
+async function filesStillThere(
+  repo: CatalogRepository,
+  deps: ScanDeps,
+  libraryId: string,
+): Promise<boolean> {
+  let sample = repo.samplePresentLocations(libraryId, 20);
+  if (sample.length === 0) {
+    if (repo.countLocations(libraryId) === 0) return true;
+    sample = repo.sampleLocations(libraryId, 20);
+  }
+  let matched = 0;
+  for (const location of sample) {
+    if (!deps.exists(location.path)) continue;
+    try {
+      const stat = await deps.stat(location.path);
+      if (!sampleConfirms(location, stat)) continue;
+      matched += 1;
+    } catch {
+      // A path that cannot be stated is not evidence this is the same disk.
+    }
+  }
+  return matched > 0;
+}
+
+function sampleConfirms(location: LocationRecord, stat: IndexedStat): boolean {
+  if (location.sizeBytes != null && stat.size !== location.sizeBytes) return false;
+  if (location.fileId && stat.fileId && location.fileId !== stat.fileId) return false;
+  return location.sizeBytes != null || Boolean(location.fileId && stat.fileId);
+}
+
+/** A null id is unknown. Only two known, different ids are a mismatch. */
+async function rootVolumeVerdict(
+  savedVolumeId: string | null,
+  root: string,
+  deps: ScanDeps,
+): Promise<'match' | 'mismatch' | 'unknown'> {
+  let observed: string | null = null;
+  try {
+    const stat = await deps.stat(root);
+    observed = isStableVolumeId(stat.volumeId) ? stat.volumeId : null;
+  } catch {
+    return 'unknown';
+  }
+  const saved = isStableVolumeId(savedVolumeId) ? savedVolumeId : null;
+  if (!observed || !saved) return 'unknown';
+  return observed === saved ? 'match' : 'mismatch';
+}
+
+function mostPresentWouldBeMissing(
+  presentAtStart: readonly string[],
+  seen: ReadonlySet<string>,
+  unreadable: readonly string[],
+  repo: CatalogRepository,
+  libraryId: string,
+): boolean {
+  if (presentAtStart.length === 0) return false;
+  const byId = new Map(
+    repo.locationsForLibrary(libraryId).map((location) => [location.id, location.path]),
+  );
+  const missing = presentAtStart.filter((id) => {
+    const stored = byId.get(id);
+    if (!stored || seen.has(id)) return false;
+    return !underDirectory(stored, unreadable);
+  });
+  return missing.length >= 20 && missing.length / presentAtStart.length > 0.9;
+}
+
+function isCaseAlias(stored: string, current: string): boolean {
+  const fold = (value: string) => value.replaceAll('\\', '/').normalize('NFC').toLowerCase();
+  return fold(stored) === fold(current);
 }
 
 function claimGoneLocation(
@@ -644,6 +780,7 @@ function locationWrite(
   stat: IndexedStat,
   filename: string,
   deps: ScanDeps,
+  keptVolumeId?: string | null,
 ) {
   return {
     id,
@@ -651,7 +788,7 @@ function locationWrite(
     libraryId: input.libraryId,
     path: input.filePath,
     filename,
-    volumeId: stat.volumeId,
+    volumeId: stat.volumeId ?? keptVolumeId ?? null,
     fileId: stat.fileId,
     sizeBytes: stat.size,
     mtimeNs: stat.mtimeNs,
@@ -660,6 +797,25 @@ function locationWrite(
     generation: input.generation,
     now: deps.now(),
   };
+}
+
+function locationNeedsWrite(
+  location: LocationRecord,
+  write: ReturnType<typeof locationWrite>,
+): boolean {
+  return (
+    location.videoId !== write.videoId ||
+    location.libraryId !== write.libraryId ||
+    location.path !== write.path ||
+    location.filename !== write.filename ||
+    location.volumeId !== write.volumeId ||
+    location.fileId !== write.fileId ||
+    location.sizeBytes !== write.sizeBytes ||
+    location.mtimeNs !== write.mtimeNs ||
+    location.fileCreatedAt !== write.fileCreatedAt ||
+    location.fileModifiedAt !== write.fileModifiedAt ||
+    location.presence !== 'present'
+  );
 }
 
 function canSkipProbe(

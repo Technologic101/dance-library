@@ -35,6 +35,8 @@ export type LocationRecord = {
   fileId: string | null;
   sizeBytes: number | null;
   mtimeNs: string | null;
+  fileCreatedAt: string | null;
+  fileModifiedAt: string | null;
   presence: 'present' | 'missing';
   createdAt: string;
 };
@@ -106,6 +108,7 @@ const LOCATION_SELECT = `
   SELECT
     id, video_id AS videoId, library_id AS libraryId, path, filename,
     volume_id AS volumeId, file_id AS fileId, size_bytes AS sizeBytes, mtime_ns AS mtimeNs,
+    file_created_at AS fileCreatedAt, file_modified_at AS fileModifiedAt,
     presence, created_at AS createdAt
   FROM video_locations
 `;
@@ -277,6 +280,21 @@ export function createRepository(db: Database.Database) {
       return db
         .prepare(`${LOCATION_SELECT} WHERE library_id = ?`)
         .all(libraryId) as LocationRecord[];
+    },
+
+    samplePresentLocations(libraryId: string, limit: number): LocationRecord[] {
+      return takeLocationSample(db, libraryId, limit, 'present');
+    },
+
+    sampleLocations(libraryId: string, limit: number): LocationRecord[] {
+      return takeLocationSample(db, libraryId, limit, null);
+    },
+
+    countLocations(libraryId: string): number {
+      const row = db
+        .prepare(`SELECT COUNT(*) AS count FROM video_locations WHERE library_id = ?`)
+        .get(libraryId) as { count: number };
+      return row.count;
     },
 
     resolveVideoId(id: string): string {
@@ -621,6 +639,22 @@ export function createRepository(db: Database.Database) {
       return result.changes > 0;
     },
   };
+}
+
+function takeLocationSample(
+  db: Database.Database,
+  libraryId: string,
+  limit: number,
+  presence: 'present' | null,
+): LocationRecord[] {
+  return db
+    .prepare(
+      `${LOCATION_SELECT}
+       WHERE library_id = ? AND (? IS NULL OR presence = ?)
+       ORDER BY created_at ASC, id ASC
+       LIMIT ?`,
+    )
+    .all(libraryId, presence, presence, limit) as LocationRecord[];
 }
 
 export type CatalogRepository = ReturnType<typeof createRepository>;
