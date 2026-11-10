@@ -45,3 +45,27 @@ describe('directoryHasEntries', () => {
     }
   });
 });
+
+describe('sameFilePathAlias', () => {
+  it('uses real filesystem canonical paths and does not confuse hard links or symlinks', async () => {
+    const root = tempDir();
+    const thumbs = tempDir();
+    const deps = createScanDeps(thumbs);
+    const original = path.join(root, 'Clip.mp4');
+    const otherCase = path.join(root, 'clip.mp4');
+    fs.writeFileSync(original, 'video');
+
+    if (fs.existsSync(otherCase)) {
+      expect(await deps.sameFilePathAlias?.(original, otherCase)).toBe(true);
+    } else {
+      fs.linkSync(original, otherCase);
+      expect(await deps.sameFilePathAlias?.(original, otherCase)).toBe(false);
+    }
+
+    if (process.platform !== 'win32') {
+      const symlink = path.join(root, 'alias.mp4');
+      fs.symlinkSync(original, symlink);
+      expect(await deps.sameFilePathAlias?.(original, symlink)).toBe(false);
+    }
+  });
+});

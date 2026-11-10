@@ -41,6 +41,11 @@ export function createScanDeps(thumbsDir: string): ScanDeps {
     },
     sameFilePathAlias: async (left, right) => {
       try {
+        const [leftStat, rightStat] = await Promise.all([
+          fs.promises.lstat(left),
+          fs.promises.lstat(right),
+        ]);
+        if (leftStat.isSymbolicLink() || rightStat.isSymbolicLink()) return false;
         return (await fs.promises.realpath(left)) === (await fs.promises.realpath(right));
       } catch {
         return false;
@@ -90,17 +95,14 @@ export function isRootLitter(name: string): boolean {
 
 /** Reads one real entry. System junk does not count. Null means the folder could not be read. */
 export async function directoryHasEntries(dir: string): Promise<boolean | null> {
-  let handle: fs.Dir | undefined;
   try {
-    handle = await fs.promises.opendir(dir);
+    const handle = await fs.promises.opendir(dir);
     for await (const entry of handle) {
       if (!isRootLitter(entry.name)) return true;
     }
     return false;
   } catch {
     return null;
-  } finally {
-    await handle?.close().catch(() => undefined);
   }
 }
 

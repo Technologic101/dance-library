@@ -144,10 +144,11 @@ const original: FakeFile = {
 };
 
 describe('review regressions', () => {
-  it('marks an unreadable root without starting a scan or changing availability', async () => {
+  it('keeps an offline library offline when its root is unreadable', async () => {
     const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
     databases.push(db);
     addLibrary(db);
+    db.prepare(`UPDATE libraries SET availability = 'offline' WHERE id = 'lib'`).run();
     const scan = largeDeps({ directories: ['D:\\dance'], files: [] });
     scan.deps.listMounts = async () => [];
     scan.deps.directoryHasEntries = async () => null;
@@ -162,7 +163,7 @@ describe('review regressions', () => {
         )
         .get(),
     ).toEqual({
-      availability: 'online',
+      availability: 'offline',
       generation: 0,
       lastError: expect.stringMatching(/could not be read/i),
     });
@@ -727,24 +728,34 @@ describe('review regressions', () => {
     });
   });
 
-  it('does not rewrite a case-differing hard link on a case-sensitive filesystem', async () => {
-    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
-    databases.push(db);
-    addLibrary(db);
-    const upper: FakeFile = { ...original, path: 'D:\\dance\\Clip.mp4', fileId: '77' };
-    const lower: FakeFile = { ...original, path: 'D:\\dance\\clip.mp4', fileId: '77' };
-    const first = largeDeps({ directories: ['D:\\dance'], files: [upper] });
-    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
-    const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
-    const locationId = (db.prepare(`SELECT id FROM video_locations`).get() as { id: string }).id;
-    const second = largeDeps({ directories: ['D:\\dance'], files: [lower, upper] });
-    second.thumbs.add(`${id}.jpg`);
-    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
-    expect(summary).toMatchObject({ updated: 0, linked: 1, unchanged: 1, missing: 0 });
-    expect(db.prepare(`SELECT path FROM video_locations WHERE id = ?`).get(locationId)).toEqual({
-      path: upper.path,
-    });
-  });
+  it.skipIf(process.platform === 'win32')(
+    'does not rewrite a case-differing hard link on a case-sensitive filesystem',
+    async () => {
+      const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+      databases.push(db);
+      addLibrary(db);
+      const upper: FakeFile = { ...original, path: 'D:\\dance\\Clip.mp4', fileId: '77' };
+      const lower: FakeFile = { ...original, path: 'D:\\dance\\clip.mp4', fileId: '77' };
+      const first = largeDeps({ directories: ['D:\\dance'], files: [upper] });
+      await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+      const id = (db.prepare(`SELECT id FROM videos`).get() as { id: string }).id;
+      const locationId = (db.prepare(`SELECT id FROM video_locations`).get() as { id: string }).id;
+      const second = largeDeps({ directories: ['D:\\dance'], files: [lower, upper] });
+      second.thumbs.add(`${id}.jpg`);
+      const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+      expect(summary).toMatchObject({ updated: 0, linked: 1, unchanged: 1, missing: 0 });
+      expect(db.prepare(`SELECT path FROM video_locations WHERE id = ?`).get(locationId)).toEqual({
+        path: upper.path,
+      });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'folds case-differing Windows paths to the same catalog key',
+    () => {
+      expect(pathKey('D:\\dance\\Clip.mp4')).toBe(pathKey('D:\\dance\\clip.mp4'));
+    },
+  );
 
   it('still rewrites a rename that differs only by case', async () => {
     const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
@@ -932,6 +943,64 @@ describe('review regressions', () => {
     expect(db.prepare(`SELECT last_error AS lastError FROM libraries`).get()).toEqual({
       lastError: null,
     });
+  });
+
+  it('refuses to mark more than 90% of a library missing after an incomplete empty-listing scan', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const files = Array.from({ length: 21 }, (_, index): FakeFile => ({
+      ...original,
+      path: `D:\\dance\\clip-${index}.mp4`,
+      fileId: String(index + 1),
+      hash: `partial-${index}`,
+      fullHash: `full-${index}`,
+    }));
+    const first = largeDeps({ directories: ['D:\\dance'], files });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+
+    const survivor = files[0]!;
+    const second = largeDeps({ directories: ['D:\\dance'], files: [survivor] });
+    second.deps.listMounts = async () => [];
+    // The OS can still stat the catalogued paths even though this walk returned
+    // an incomplete listing. That proves the root is the same disk.
+    second.deps.exists = first.deps.exists;
+    second.deps.stat = first.deps.stat;
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+
+    expect(summary).toMatchObject({ missing: 0, errors: 1, offline: 0 });
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM video_locations WHERE presence = 'present'`).get(),
+    ).toEqual({ count: 21 });
+    expect(db.prepare(`SELECT last_error AS lastError FROM libraries`).get()).toEqual({
+      lastError: expect.stringMatching(/listing was empty/i),
+    });
+  });
+
+  it('allows exactly 19 missing locations despite crossing the 90% ratio', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    addLibrary(db);
+    const files = Array.from({ length: 20 }, (_, index): FakeFile => ({
+      ...original,
+      path: `D:\\dance\\boundary-${index}.mp4`,
+      fileId: String(index + 100),
+      hash: `boundary-partial-${index}`,
+      fullHash: `boundary-full-${index}`,
+    }));
+    const first = largeDeps({ directories: ['D:\\dance'], files });
+    await scanLibrary(db, 'lib', first.deps, { thumbsDir: tempDir() });
+
+    const second = largeDeps({ directories: ['D:\\dance'], files: [files[0]!] });
+    second.deps.listMounts = async () => [];
+    second.deps.exists = first.deps.exists;
+    second.deps.stat = first.deps.stat;
+    const summary = await scanLibrary(db, 'lib', second.deps, { thumbsDir: tempDir() });
+
+    expect(summary).toMatchObject({ missing: 19, errors: 0, offline: 0 });
+    expect(
+      db.prepare(`SELECT COUNT(*) AS count FROM video_locations WHERE presence = 'missing'`).get(),
+    ).toEqual({ count: 19 });
   });
 
   it('stays online through the real stat when the mount listing is empty and the file is still there', async () => {

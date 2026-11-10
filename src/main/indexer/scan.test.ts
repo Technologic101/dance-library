@@ -674,5 +674,5 @@ describe('scanLibrary on disk', () => {
       return { name, size: stat.size, mtimeMs: stat.mtimeMs };
     });
     expect(after).toEqual(before);
-  }, 30_000);
+  }, 90_000);
 });

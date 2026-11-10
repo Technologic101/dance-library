@@ -812,6 +812,8 @@ function locationNeedsWrite(
     location.fileId !== write.fileId ||
     location.sizeBytes !== write.sizeBytes ||
     location.mtimeNs !== write.mtimeNs ||
+    location.fileCreatedAt !== write.fileCreatedAt ||
+    location.fileModifiedAt !== write.fileModifiedAt ||
     location.presence !== 'present'
   );
 }

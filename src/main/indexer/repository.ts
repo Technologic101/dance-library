@@ -35,6 +35,8 @@ export type LocationRecord = {
   fileId: string | null;
   sizeBytes: number | null;
   mtimeNs: string | null;
+  fileCreatedAt: string | null;
+  fileModifiedAt: string | null;
   presence: 'present' | 'missing';
   createdAt: string;
 };
@@ -106,6 +108,7 @@ const LOCATION_SELECT = `
   SELECT
     id, video_id AS videoId, library_id AS libraryId, path, filename,
     volume_id AS volumeId, file_id AS fileId, size_bytes AS sizeBytes, mtime_ns AS mtimeNs,
+    file_created_at AS fileCreatedAt, file_modified_at AS fileModifiedAt,
     presence, created_at AS createdAt
   FROM video_locations
 `;
@@ -648,7 +651,7 @@ function takeLocationSample(
     .prepare(
       `${LOCATION_SELECT}
        WHERE library_id = ? AND (? IS NULL OR presence = ?)
-       ORDER BY last_scan_generation DESC, updated_at DESC, id DESC
+       ORDER BY created_at ASC, id ASC
        LIMIT ?`,
     )
     .all(libraryId, presence, presence, limit) as LocationRecord[];
