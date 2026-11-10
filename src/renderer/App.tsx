@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { SetStateAction } from 'react';
 import type {
   AddLibrariesResult,
   AppHealth,
@@ -15,6 +16,7 @@ import {
   dropMissingFacets,
   emptyBrowseFilters,
   filtersAreActive,
+  pageAfterShrink,
   toVideoQuery,
   videoPageSize,
   videoTypeLabels,
@@ -49,8 +51,10 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     tags: [],
     libraries: [],
   });
-  const [filters, setFilters] = useState<BrowseFilters>(emptyBrowseFilters);
-  const [page, setPage] = useState(0);
+  const [{ filters, page }, setBrowse] = useState(() => ({
+    filters: emptyBrowseFilters(),
+    page: 0,
+  }));
   const [matchTotal, setMatchTotal] = useState<number | null>(null);
   const [catalogView, setCatalogView] = useState<CatalogView>('library');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -61,15 +65,34 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [view, setView] = useState<ViewMode>('grid');
   const notified = useRef(false);
   const listSeq = useRef(0);
+  const metaSeq = useRef(0);
   const debouncedText = useDebounced(filters.text, 150);
+  const filterKey = JSON.stringify({
+    catalogView,
+    filters: { ...filters, text: debouncedText },
+  });
   const query = useMemo(() => {
     const next = toVideoQuery({ ...filters, text: debouncedText }, catalogView === 'excluded');
     next.offset = page * videoPageSize;
     return next;
-  }, [filters, debouncedText, catalogView, page]);
-  const queryRef = useRef(query);
-  queryRef.current = query;
-  const filterKey = `${catalogView}|${debouncedText}|${filters.capturedFrom}|${filters.capturedTo}|${filters.videoType}|${filters.styleId}|${filters.instructorId}|${filters.level}|${filters.tagId}|${filters.duration}|${filters.libraryId}|${filters.favoriteOnly}|${filters.sort}`;
+    // filterKey replaces the live search text with its debounced value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, page]);
+
+  function setPage(next: SetStateAction<number>): void {
+    setBrowse((current) => ({
+      ...current,
+      page: typeof next === 'function' ? next(current.page) : next,
+    }));
+  }
+
+  function setFiltersAndResetPage(next: SetStateAction<BrowseFilters>): void {
+    setBrowse((current) => {
+      const filtersNow = typeof next === 'function' ? next(current.filters) : next;
+      if (filtersNow === current.filters) return current;
+      return { filters: filtersNow, page: 0 };
+    });
+  }
 
   useEffect(() => {
     let active = true;
@@ -86,26 +109,26 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     };
   }, [api]);
 
-  useEffect(() => {
-    setPage(0);
-  }, [filterKey]);
+  const queryRef = useRef(query);
+  queryRef.current = query;
 
   useEffect(() => {
     let active = true;
+    const metadataSeq = ++metaSeq.current;
     Promise.all([
       api.listLibraries(),
       api.countVideos(),
       api.listFacets({ excluded: catalogView === 'excluded' }),
     ])
       .then(([nextLibraries, nextCounts, nextFacets]) => {
-        if (!active) return;
+        if (!active || metadataSeq !== metaSeq.current) return;
         setLibraries(nextLibraries);
         setCounts(nextCounts);
         setFacets(nextFacets);
-        setFilters((current) => dropMissingFacets(current, nextFacets));
+        setFiltersAndResetPage((current) => dropMissingFacets(current, nextFacets));
       })
       .catch((caught: unknown) => {
-        if (active) setLoadError(messageOf(caught));
+        if (active && metadataSeq === metaSeq.current) setLoadError(messageOf(caught));
       });
     return () => {
       active = false;
@@ -122,12 +145,14 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         setMatchTotal(result.total);
         setLoadError(null);
         setSelected(new Set());
+        const nextPage = pageAfterShrink(page, result.total, videoPageSize);
+        if (result.items.length === 0 && nextPage != null) setPage(nextPage);
       })
       .catch((caught: unknown) => {
         if (seq !== listSeq.current) return;
         setLoadError(messageOf(caught));
       });
-  }, [api, query]);
+  }, [api, query, page]);
 
   useEffect(() => {
     return api.onScanProgress((next) => setProgress(next));
@@ -143,6 +168,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
 
   async function reload(): Promise<void> {
     const seq = ++listSeq.current;
+    const metadataSeq = ++metaSeq.current;
     const current = queryRef.current;
     const [nextLibraries, nextCounts, nextFacets, pageResult] = await Promise.all([
       api.listLibraries(),
@@ -150,15 +176,20 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       api.listFacets({ excluded: current.excluded === true }),
       api.listVideos(current),
     ]);
+    if (metadataSeq === metaSeq.current) {
+      setLibraries(nextLibraries);
+      setCounts(nextCounts);
+      setFacets(nextFacets);
+      setFiltersAndResetPage((filtersNow) => dropMissingFacets(filtersNow, nextFacets));
+    }
     if (seq !== listSeq.current) return;
-    setLibraries(nextLibraries);
-    setCounts(nextCounts);
-    setFacets(nextFacets);
-    setFilters((filtersNow) => dropMissingFacets(filtersNow, nextFacets));
     setVideos(pageResult.items);
     setMatchTotal(pageResult.total);
     setLoadError(null);
     setSelected(new Set());
+    const sentPage = Math.floor((current.offset ?? 0) / videoPageSize);
+    const nextPage = pageAfterShrink(sentPage, pageResult.total, videoPageSize);
+    if (pageResult.items.length === 0 && nextPage != null) setPage(nextPage);
   }
 
   async function runTask(task: () => Promise<void>): Promise<void> {
@@ -206,6 +237,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
 
   function showCatalog(view: CatalogView): void {
     setCatalogView(view);
+    setPage(0);
     setLoadError(null);
   }
 
@@ -345,7 +377,13 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             </div>
           ) : null}
           {notice ? <p role="status">{notice}</p> : null}
-          <FilterBar facets={facets} value={filters} onChange={setFilters} />
+          <FilterBar
+            facets={facets}
+            value={filters}
+            onChange={(next) => {
+              setFiltersAndResetPage(next);
+            }}
+          />
           {loadError ? <p role="alert">{loadError}</p> : null}
           {videos === null && !loadError ? <p role="status">Checking the runtime…</p> : null}
           {videos && videos.length > 0 ? (

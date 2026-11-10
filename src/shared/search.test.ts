@@ -4,6 +4,7 @@ import {
   filtersAreActive,
   ftsMatch,
   localDayBounds,
+  pageAfterShrink,
   parseVideoQuery,
   toVideoQuery,
 } from './search';
@@ -63,11 +64,34 @@ describe('search query', () => {
     });
   });
 
-  it('turns a local day into an inclusive UTC range', () => {
-    expect(localDayBounds('2024-06-30', '2024-06-30', 420)).toEqual({
-      from: '2024-06-30T07:00:00.000Z',
-      toExclusive: '2024-07-01T07:00:00.000Z',
+  it('keeps local calendar-day bounds through the IPC parser', () => {
+    const filters = {
+      ...emptyBrowseFilters(),
+      capturedFrom: '2025-01-01',
+      capturedTo: '2025-01-31',
+    };
+    const wireQuery = toVideoQuery(filters, false);
+
+    expect(parseVideoQuery(wireQuery)).toMatchObject({
+      capturedFrom: wireQuery.capturedFrom,
+      capturedTo: wireQuery.capturedTo,
+      capturedFromDay: '2025-01-01',
+      capturedToDay: '2025-01-31',
     });
+  });
+
+  it("turns a local day into that date's own midnight", () => {
+    expect(localDayBounds('2024-06-30', '2024-06-30')).toEqual({
+      from: new Date(2024, 5, 30).toISOString(),
+      toExclusive: new Date(2024, 6, 1).toISOString(),
+    });
+  });
+
+  it('moves back from an empty page when the catalog shrinks', () => {
+    expect(pageAfterShrink(3, 144, 48)).toBe(2);
+    expect(pageAfterShrink(1, 48, 48)).toBe(0);
+    expect(pageAfterShrink(0, 10, 48)).toBeNull();
+    expect(pageAfterShrink(1, 0, 48)).toBeNull();
   });
 
   it('does not treat a sort change as a filter', () => {

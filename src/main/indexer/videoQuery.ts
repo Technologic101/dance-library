@@ -26,13 +26,26 @@ export function videoListQuery(query: VideoQuery): {
       ) fts ON fts.docId = sk.rowid
     `;
   }
-  if (query.capturedFrom) {
-    params.capturedFrom = query.capturedFrom;
-    where.push(`v.captured_at >= @capturedFrom`);
-  }
-  if (query.capturedTo) {
-    params.capturedTo = query.capturedTo;
-    where.push(`v.captured_at < @capturedTo`);
+  if (query.capturedFrom || query.capturedTo || query.capturedFromDay || query.capturedToDay) {
+    if (query.capturedFrom) params.capturedFrom = query.capturedFrom;
+    if (query.capturedTo) params.capturedTo = query.capturedTo;
+    if (query.capturedFromDay) params.capturedFromDay = query.capturedFromDay;
+    if (query.capturedToDay) params.capturedToDay = query.capturedToDay;
+    const instantBounds = ["instr(COALESCE(captured_at, ''), 'T') > 0"];
+    if (query.capturedFrom) instantBounds.push('captured_at >= @capturedFrom');
+    else if (query.capturedFromDay) instantBounds.push('0');
+    if (query.capturedTo) instantBounds.push('captured_at < @capturedTo');
+    else if (query.capturedToDay) instantBounds.push('0');
+    const dayBounds = ['captured_at IS NOT NULL', "instr(captured_at, 'T') = 0"];
+    if (query.capturedFromDay) dayBounds.push('captured_at >= @capturedFromDay');
+    else if (query.capturedFrom) dayBounds.push('0');
+    if (query.capturedToDay) dayBounds.push('captured_at <= @capturedToDay');
+    else if (query.capturedTo) dayBounds.push('0');
+    where.push(`v.rowid IN (
+      SELECT rowid FROM videos WHERE ${instantBounds.join(' AND ')}
+      UNION
+      SELECT rowid FROM videos WHERE ${dayBounds.join(' AND ')}
+    )`);
   }
   addIn(where, params, 'v.video_type', query.videoTypes, 'type');
   addIn(where, params, 'v.style_id', query.styleIds, 'style');
@@ -74,7 +87,33 @@ export function videoListQuery(query: VideoQuery): {
     query.limit != null
       ? `LIMIT ${Math.trunc(query.limit)} OFFSET ${Math.trunc(query.offset ?? 0)}`
       : '';
+  const hasText = Boolean(match);
+  const sortsByTitle = query.sort === 'title' || query.sort === 'title-desc';
+  const displayTitle = `COALESCE(NULLIF(TRIM(v.title), ''), (
+        SELECT loc2.filename
+        FROM video_locations loc2
+        WHERE loc2.video_id = v.id
+        ORDER BY CASE loc2.presence WHEN 'present' THEN 0 ELSE 1 END,
+                 loc2.filename COLLATE NOCASE,
+                 loc2.id
+        LIMIT 1
+      ), '')`;
+  const pageSql = `
+    SELECT
+      v.id AS id,
+      ${sortsByTitle ? `${displayTitle} AS displayTitle,` : ''}
+      v.captured_at AS capturedAt,
+      ${captureSortKey('v.captured_at')} AS capturedSortKey,
+      v.duration_ms AS durationMs
+      ${hasText ? ', fts.rank AS rank' : ''}
+    FROM videos v
+    ${ftsJoin}
+    WHERE ${where.join(' AND ')}
+    ORDER BY ${orderBy(query.sort, hasText, 'inner')}
+    ${limit}
+  `;
   const sql = `
+    WITH page AS (${pageSql})
     SELECT
       v.id,
       v.title,
@@ -92,15 +131,7 @@ export function videoListQuery(query: VideoQuery): {
       v.level,
       v.favorite,
       MAX(s.name) AS styleName,
-      COALESCE(NULLIF(TRIM(v.title), ''), (
-        SELECT loc2.filename
-        FROM video_locations loc2
-        WHERE loc2.video_id = v.id
-        ORDER BY CASE loc2.presence WHEN 'present' THEN 0 ELSE 1 END,
-                 loc2.filename COLLATE NOCASE,
-                 loc2.id
-        LIMIT 1
-      ), '') AS displayTitle,
+      ${sortsByTitle ? 'page.displayTitle' : displayTitle} AS displayTitle,
       COALESCE((
         SELECT json_group_array(name) FROM (
           SELECT i.name AS name
@@ -119,7 +150,7 @@ export function videoListQuery(query: VideoQuery): {
           ORDER BY t.name COLLATE NOCASE
         )
       ), '[]') AS tagsJson,
-      ${match ? 'MIN(fts.rank)' : 'NULL'} AS rank,
+      ${hasText ? 'page.rank' : 'NULL'} AS rank,
       json_group_array(
         CASE WHEN loc.id IS NULL THEN NULL ELSE json_object(
           'id', loc.id,
@@ -130,15 +161,13 @@ export function videoListQuery(query: VideoQuery): {
           'presence', loc.presence
         ) END
       ) AS locationsJson
-    FROM videos v
+    FROM page
+    JOIN videos v ON v.id = page.id
     LEFT JOIN video_locations loc ON loc.video_id = v.id
     LEFT JOIN libraries lib ON lib.id = loc.library_id
     LEFT JOIN styles s ON s.id = v.style_id
-    ${ftsJoin}
-    WHERE ${where.join(' AND ')}
     GROUP BY v.id
-    ORDER BY ${orderBy(query.sort, Boolean(match))}
-    ${limit}
+    ORDER BY ${orderBy(query.sort, hasText, 'outer')}
   `;
   const countSql = `
     SELECT COUNT(*) AS total
@@ -181,24 +210,37 @@ function addExists(
   where.push(`EXISTS (${sql.replace('{ids}', names.join(', '))})`);
 }
 
-function orderBy(sort: VideoSort | undefined, hasText: boolean): string {
+function orderBy(sort: VideoSort | undefined, hasText: boolean, scope: 'inner' | 'outer'): string {
+  const captured = scope === 'inner' ? 'v.captured_at' : 'page.capturedAt';
+  const capturedSortKey = scope === 'inner' ? captureSortKey(captured) : 'page.capturedSortKey';
+  const duration = scope === 'inner' ? 'v.duration_ms' : 'page.durationMs';
+  const title = scope === 'inner' ? 'displayTitle' : 'page.displayTitle';
+  const rank = scope === 'inner' ? 'rank' : 'page.rank';
+  const id = 'v.id';
   switch (sort) {
     case 'oldest':
-      return 'CASE WHEN v.captured_at IS NULL THEN 1 ELSE 0 END, v.captured_at ASC, v.id ASC';
+      return `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${capturedSortKey} ASC, ${id} ASC`;
     case 'title':
-      return 'displayTitle COLLATE NOCASE ASC, v.id ASC';
+      return `${title} COLLATE NOCASE ASC, ${id} ASC`;
     case 'title-desc':
-      return 'displayTitle COLLATE NOCASE DESC, v.id ASC';
+      return `${title} COLLATE NOCASE DESC, ${id} ASC`;
     case 'longest':
-      return 'CASE WHEN v.duration_ms IS NULL THEN 1 ELSE 0 END, v.duration_ms DESC, v.id ASC';
+      return `CASE WHEN ${duration} IS NULL THEN 1 ELSE 0 END, ${duration} DESC, ${id} ASC`;
     case 'shortest':
-      return 'CASE WHEN v.duration_ms IS NULL THEN 1 ELSE 0 END, v.duration_ms ASC, v.id ASC';
+      return `CASE WHEN ${duration} IS NULL THEN 1 ELSE 0 END, ${duration} ASC, ${id} ASC`;
     case 'relevance':
       return hasText
-        ? 'rank ASC, v.id ASC'
-        : 'CASE WHEN v.captured_at IS NULL THEN 1 ELSE 0 END, v.captured_at DESC, v.id ASC';
+        ? `${rank} ASC, ${id} ASC`
+        : `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${capturedSortKey} DESC, ${id} ASC`;
     case 'newest':
     default:
-      return 'CASE WHEN v.captured_at IS NULL THEN 1 ELSE 0 END, v.captured_at DESC, v.id ASC';
+      return `CASE WHEN ${captured} IS NULL THEN 1 ELSE 0 END, ${capturedSortKey} DESC, ${id} ASC`;
   }
+}
+
+/** Date-only values represent local midnight; timestamp values are already UTC instants. */
+function captureSortKey(column: string): string {
+  return `CASE WHEN instr(${column}, 'T') = 0
+    THEN julianday(${column} || ' 00:00:00', 'utc')
+    ELSE julianday(${column}) END`;
 }
