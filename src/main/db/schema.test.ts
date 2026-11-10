@@ -4,6 +4,7 @@ import { createRepository } from '../indexer/repository';
 import { applyMigrations, migrate, migrations } from './migrate';
 import { migration001 } from './migrations/001_init';
 import { migration002 } from './migrations/002_catalog';
+import { repairSearchIndex } from './searchIndex';
 
 const openDatabases: Database.Database[] = [];
 
@@ -19,6 +20,26 @@ afterEach(() => {
 });
 
 describe('catalog schema', () => {
+  it('installs identical guarded triggers after a v5 upgrade and a fresh catalog repair', () => {
+    const upgraded = openMemory();
+    applyMigrations(upgraded, migrations.slice(0, 5));
+    migrate(upgraded);
+
+    const repaired = openMemory();
+    migrate(repaired);
+    repaired.exec('DROP TABLE video_search_keys');
+    repairSearchIndex(repaired);
+
+    const triggerSql = (db: Database.Database) =>
+      db.prepare(`SELECT name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name`).all();
+    expect(triggerSql(upgraded)).toEqual(triggerSql(repaired));
+    for (const name of ['instructors_fts_rename', 'styles_fts_rename']) {
+      const row = upgraded
+        .prepare(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?`)
+        .get(name) as { sql: string };
+      expect(row.sql).toContain('WHEN old.name IS NOT new.name');
+    }
+  });
   it('adds Phase 3 built-in styles when upgrading v5 without duplicating a user style', () => {
     const db = openMemory();
     applyMigrations(db, migrations.slice(0, 5));

@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppHealth, CatalogFacets, LibrarySummary, VideoListItem } from '../shared/api';
 import { formatVideoMeta } from '../shared/format';
@@ -230,7 +231,7 @@ describe('App', () => {
     await waitFor(() => expect(excludeVideos).toHaveBeenCalledWith(['vid-1', 'vid-2']));
   });
 
-  it('opens the editor from the keyboard and saves without the mouse', async () => {
+  it('opens the editor in StrictMode and completes a keyboard save', async () => {
     const updateVideo = vi.fn(async (id) => ({
       id,
       displayTitle: 'My lesson',
@@ -248,7 +249,11 @@ describe('App', () => {
       lessonDemos: [],
     }));
     api({ updateVideo });
-    render(<App />);
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'e' });
@@ -256,6 +261,24 @@ describe('App', () => {
     fireEvent.change(title, { target: { value: 'My lesson' } });
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
     await waitFor(() => expect(updateVideo).toHaveBeenCalledWith('vid-1', { title: 'My lesson' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('shows save errors in StrictMode and restores the save button', async () => {
+    api({ updateVideo: vi.fn(async () => Promise.reject(new Error('Catalog is locked'))) });
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const title = await screen.findByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, { target: { value: 'Unsaved' } });
+    fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
+    expect((await screen.findByRole('alert')).textContent).toContain('Catalog is locked');
+    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(false);
   });
 
   it('bulk editing starts mixed and sends only explicit add operations', async () => {
@@ -316,7 +339,11 @@ describe('App', () => {
     fireEvent.keyDown(window, { key: 'e' });
     const addTags = await screen.findByRole('combobox', { name: 'Add tags' });
     fireEvent.change(addTags, { target: { value: 'Viradinha' } });
-    expect(await screen.findByRole('option', { name: 'Afro' })).toBeTruthy();
+    const suggestion = await screen.findByRole('option', { name: 'Afro' });
+    expect(suggestion).toBeTruthy();
+    expect(addTags.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(addTags, { key: 'Tab' });
+    expect((addTags as HTMLInputElement).value).toBe('Viradinha');
 
     const panel = addTags.closest('aside')!;
     for (const field of panel.querySelectorAll<HTMLElement>('input, select, textarea')) {
@@ -344,8 +371,96 @@ describe('App', () => {
     const tags = await screen.findByRole('combobox', { name: 'Tags (comma separated)' });
     fireEvent.change(tags, { target: { value: 'mus' } });
     expect(await screen.findByRole('option', { name: 'Musicality' })).toBeTruthy();
+    fireEvent.keyDown(tags, { key: 'ArrowDown' });
     fireEvent.keyDown(tags, { key: 'Enter' });
     expect((tags as HTMLInputElement).value).toBe('Musicality');
+  });
+
+  it('does not accept autocomplete results from the previous token', async () => {
+    let resolveSearch: ((values: { id: string; name: string }[]) => void) | undefined;
+    const searchCatalogValues = vi.fn(
+      () =>
+        new Promise<{ id: string; name: string }[]>((resolve) => {
+          resolveSearch = resolve;
+        }),
+    );
+    api({
+      searchCatalogValues,
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const tags = await screen.findByRole('combobox', { name: 'Tags (comma separated)' });
+    fireEvent.change(tags, { target: { value: 'Sal' } });
+    await waitFor(() => expect(searchCatalogValues).toHaveBeenCalledWith('tag', 'Sal'));
+    await act(async () => resolveSearch?.([{ id: 'salsa', name: 'Salsa On1' }]));
+    expect(await screen.findByRole('option', { name: 'Salsa On1' })).toBeTruthy();
+    fireEvent.change(tags, { target: { value: 'Zouk' } });
+    fireEvent.keyDown(tags, { key: 'Enter' });
+    expect((tags as HTMLInputElement).value).toBe('Zouk');
+  });
+
+  it('restores a bulk field and focus when leaving it unchanged', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({
+      bulkUpdateVideos,
+      getVideoDetails: async (id) => ({
+        id,
+        displayTitle: id,
+        title: null,
+        videoType: null,
+        style: null,
+        instructors: [],
+        level: null,
+        eventName: 'Original event',
+        eventDate: '2024-05-01',
+        tags: [],
+        rating: null,
+        favorite: false,
+        notes: null,
+        lessonDemos: [],
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const event = await screen.findByRole('textbox', { name: 'Event' });
+    fireEvent.change(event, { target: { value: 'Changed event' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Leave event unchanged' }));
+    expect((event as HTMLInputElement).value).toBe('Original event');
+    await waitFor(() => expect(document.activeElement).toBe(event));
+    const addTags = screen.getByRole('combobox', { name: 'Add tags' });
+    fireEvent.change(addTags, { target: { value: 'Practice' } });
+    fireEvent.keyDown(addTags.closest('aside')!, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
+        addTagIds: ['practice'],
+      }),
+    );
+  });
+
+  it('shows an error and does not create an unknown removal tag', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({ bulkUpdateVideos, searchCatalogValues: async () => [] });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const removeTags = await screen.findByRole('combobox', { name: 'Remove tags' });
+    fireEvent.change(removeTags, { target: { value: 'Misspelled' } });
+    fireEvent.keyDown(removeTags.closest('aside')!, { key: 's', ctrlKey: true });
+    expect((await screen.findByRole('alert')).textContent).toContain('Unknown tag: Misspelled');
+    expect(bulkUpdateVideos).not.toHaveBeenCalled();
   });
 
   it('keeps the edited video selected after save so ArrowDown selects the next video', async () => {

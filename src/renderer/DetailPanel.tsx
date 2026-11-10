@@ -30,14 +30,16 @@ export function DetailPanel({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const first = useRef<HTMLInputElement>(null);
+  const eventInput = useRef<HTMLInputElement>(null);
+  const notesInput = useRef<HTMLTextAreaElement>(null);
   const panel = useRef<HTMLElement>(null);
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   useEffect(() => {
     let cancelled = false;
     setDetails([]);
@@ -62,6 +64,15 @@ export function DetailPanel({
   function set(key: string, value: unknown) {
     setValues((v) => ({ ...v, [key]: value }));
     setDirty((d) => new Set(d).add(key));
+  }
+  function leaveUnchanged(key: string, input: HTMLElement | null) {
+    setValues((current) => ({ ...current, [key]: commonValues(details)[key] ?? '' }));
+    setDirty((current) => {
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+    queueMicrotask(() => input?.focus());
   }
   async function valueIds(
     kind: CatalogValueKind,
@@ -225,20 +236,25 @@ export function DetailPanel({
         </button>
       </div>
       <p className="shortcut-hint">Tab through fields · Ctrl/⌘S save · Esc cancel · rating 1–5</p>
-      <label>
-        Title
+      <div className="combo-field">
+        <label htmlFor="catalog-title">Title</label>
         <input
+          id="catalog-title"
           ref={first}
           value={String(values.title ?? '')}
           placeholder={bulk && !dirty.has('title') ? mixed : ''}
           onChange={(e) => set('title', e.target.value || null)}
         />
-        {bulk && dirty.has('title') ? (
-          <button type="button" onClick={() => clearDirty('title', setDirty)}>
+        {bulk ? (
+          <button
+            type="button"
+            disabled={!dirty.has('title')}
+            onClick={() => leaveUnchanged('title', first.current)}
+          >
             Leave title unchanged
           </button>
         ) : null}
-      </label>
+      </div>
       {select('videoType', 'Type', videoTypes, 'Clear type')}
       <CatalogCombo
         api={api}
@@ -280,28 +296,36 @@ export function DetailPanel({
         />
       )}
       {select('level', 'Level', levels, 'Clear level')}
-      <label>
-        Event
+      <div className="combo-field">
+        <label htmlFor="catalog-event">Event</label>
         <input
+          id="catalog-event"
+          ref={eventInput}
           value={String(values.eventName ?? '')}
           placeholder={bulk && !dirty.has('eventName') ? mixed : ''}
           onChange={(e) => set('eventName', e.target.value || null)}
         />
-        {bulk && dirty.has('eventName') ? (
-          <button type="button" onClick={() => clearDirty('eventName', setDirty)}>
+        {bulk ? (
+          <button
+            type="button"
+            disabled={!dirty.has('eventName')}
+            onClick={() => leaveUnchanged('eventName', eventInput.current)}
+          >
             Leave event unchanged
           </button>
         ) : null}
-      </label>
+      </div>
       <label>
         Date
         <input
           type="date"
           value={String(values.eventDate ?? '')}
-          aria-label={`Date${bulk && !dirty.has('eventDate') ? ' (mixed or unchanged)' : ''}`}
+          aria-label={`Date${bulk && !dirty.has('eventDate') && values.eventDate === undefined ? ' (mixed or unchanged)' : ''}`}
           onChange={(e) => set('eventDate', e.target.value || null)}
         />
-        {bulk && !dirty.has('eventDate') ? <small>{mixed}</small> : null}
+        {bulk && !dirty.has('eventDate') && values.eventDate === undefined ? (
+          <small>{mixed}</small>
+        ) : null}
       </label>
       {bulk ? (
         <>
@@ -365,19 +389,25 @@ export function DetailPanel({
           Favorite
         </label>
       )}
-      <label>
-        Notes
+      <div className="combo-field">
+        <label htmlFor="catalog-notes">Notes</label>
         <textarea
+          id="catalog-notes"
+          ref={notesInput}
           value={String(values.notes ?? '')}
           placeholder={bulk && !dirty.has('notes') ? mixed : ''}
           onChange={(e) => set('notes', e.target.value || null)}
         />
-        {bulk && dirty.has('notes') ? (
-          <button type="button" onClick={() => clearDirty('notes', setDirty)}>
+        {bulk ? (
+          <button
+            type="button"
+            disabled={!dirty.has('notes')}
+            onClick={() => leaveUnchanged('notes', notesInput.current)}
+          >
             Leave notes unchanged
           </button>
         ) : null}
-      </label>
+      </div>
       {!bulk ? (
         <LinkPicker
           api={api}
@@ -419,7 +449,8 @@ function CatalogCombo({
   const id = useId(),
     [options, setOptions] = useState<CatalogValue[]>([]),
     [open, setOpen] = useState(false),
-    [active, setActive] = useState(0),
+    [active, setActive] = useState(-1),
+    [optionsToken, setOptionsToken] = useState(''),
     [focused, setFocused] = useState(false),
     seq = useRef(0);
   const token = value.split(',').at(-1)?.trim() ?? '';
@@ -427,6 +458,7 @@ function CatalogCombo({
     if (!focused || !token) {
       ++seq.current;
       setOptions([]);
+      setOptionsToken('');
       setOpen(false);
       return;
     }
@@ -437,7 +469,8 @@ function CatalogCombo({
         .then((v) => {
           if (current === seq.current) {
             setOptions(v);
-            setActive(0);
+            setOptionsToken(token);
+            setActive(-1);
             setOpen(v.length > 0);
           }
         })
@@ -445,6 +478,8 @@ function CatalogCombo({
     }, 100);
     return () => clearTimeout(timer);
   }, [api, focused, kind, token]);
+  const currentOptions = optionsToken === token ? options : [];
+  const optionsOpen = open && currentOptions.length > 0;
   function accept(name: string) {
     const parts = value.split(',');
     parts[parts.length - 1] = ` ${name}`;
@@ -458,9 +493,9 @@ function CatalogCombo({
         id={`${id}-input`}
         role="combobox"
         aria-autocomplete="list"
-        aria-expanded={open}
+        aria-expanded={optionsOpen}
         aria-controls={id}
-        aria-activedescendant={open ? `${id}-${active}` : undefined}
+        aria-activedescendant={optionsOpen && active >= 0 ? `${id}-${active}` : undefined}
         value={value}
         placeholder={placeholder || 'Type a name; comma adds another'}
         onFocus={() => setFocused(true)}
@@ -471,7 +506,9 @@ function CatalogCombo({
         onChange={(e) => {
           setFocused(true);
           onChange(e.target.value);
-          setOpen(Boolean(e.target.value.split(',').at(-1)?.trim()));
+          setOpen(false);
+          setOptionsToken('');
+          setActive(-1);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Escape' && open) {
@@ -480,24 +517,26 @@ function CatalogCombo({
             setOpen(false);
             return;
           }
-          if (!open) return;
+          if (!optionsOpen) return;
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
             setActive(
-              (a) => (a + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length,
+              (a) =>
+                (a + (e.key === 'ArrowDown' ? 1 : -1) + currentOptions.length) %
+                currentOptions.length,
             );
           }
           if (e.key === 'Enter') {
-            if (options[active]) {
+            if (currentOptions[active]) {
               e.preventDefault();
-              accept(options[active].name);
+              accept(currentOptions[active].name);
             }
           }
         }}
       />
-      {open ? (
+      {optionsOpen ? (
         <ul id={id} role="listbox" className="combo-options">
-          {options.map((x, i) => (
+          {currentOptions.map((x, i) => (
             <li
               id={`${id}-${i}`}
               key={x.id}
@@ -626,6 +665,13 @@ function LinkPicker({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setQ('');
+                setOptions([]);
+                return;
+              }
               if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault();
                 setActive(
@@ -638,19 +684,21 @@ function LinkPicker({
               }
             }}
           />
-          <ul id={listId} role="listbox" className="combo-options link-options">
-            {options.map((x, i) => (
-              <li
-                id={`${listId}-${i}`}
-                key={x.id}
-                role="option"
-                aria-selected={i === active}
-                onClick={() => link(x.id)}
-              >
-                {x.displayTitle}
-              </li>
-            ))}
-          </ul>
+          {options.length ? (
+            <ul id={listId} role="listbox" className="combo-options link-options">
+              {options.map((x, i) => (
+                <li
+                  id={`${listId}-${i}`}
+                  key={x.id}
+                  role="option"
+                  aria-selected={i === active}
+                  onClick={() => link(x.id)}
+                >
+                  {x.displayTitle}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </>
       ) : (
         <p>Set this video to Lesson or Demo, save, then add a link.</p>
@@ -702,13 +750,6 @@ function append(value: unknown, name: string) {
 }
 function message(e: unknown) {
   return e instanceof Error ? e.message : String(e);
-}
-function clearDirty(key: string, setDirty: React.Dispatch<React.SetStateAction<Set<string>>>) {
-  setDirty((current) => {
-    const next = new Set(current);
-    next.delete(key);
-    return next;
-  });
 }
 function trapTab(e: React.KeyboardEvent, root: HTMLElement | null) {
   if (!root) return;

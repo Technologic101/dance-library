@@ -226,24 +226,28 @@ export function installCatalogSearchTriggers(db: Database.Database): void {
     COALESCE((SELECT group_concat(i.name,' ') FROM video_instructors vi JOIN instructors i ON i.id=vi.instructor_id WHERE vi.video_id=${videoId}), ''))`;
   db.exec(`
     DROP TRIGGER IF EXISTS videos_fts_update;
+    DROP TRIGGER IF EXISTS video_instructors_fts_insert;
+    DROP TRIGGER IF EXISTS video_instructors_fts_delete;
+    DROP TRIGGER IF EXISTS instructors_fts_rename;
+    DROP TRIGGER IF EXISTS styles_fts_rename;
     CREATE TRIGGER videos_fts_update AFTER UPDATE OF title, notes, event_name, style_id ON videos BEGIN
       UPDATE videos_fts SET title=COALESCE(new.title,''), notes=${documentFor('new.id')}
       WHERE rowid=(SELECT rowid FROM video_search_keys WHERE video_id=new.id);
     END;
-    CREATE TRIGGER IF NOT EXISTS video_instructors_fts_insert AFTER INSERT ON video_instructors BEGIN
+    CREATE TRIGGER video_instructors_fts_insert AFTER INSERT ON video_instructors BEGIN
       UPDATE videos_fts SET notes=${documentFor('new.video_id')}
       WHERE rowid=(SELECT rowid FROM video_search_keys WHERE video_id=new.video_id);
     END;
-    CREATE TRIGGER IF NOT EXISTS video_instructors_fts_delete AFTER DELETE ON video_instructors BEGIN
+    CREATE TRIGGER video_instructors_fts_delete AFTER DELETE ON video_instructors BEGIN
       UPDATE videos_fts SET notes=${documentFor('old.video_id')}
       WHERE rowid=(SELECT rowid FROM video_search_keys WHERE video_id=old.video_id);
     END;
-    CREATE TRIGGER IF NOT EXISTS instructors_fts_rename AFTER UPDATE OF name ON instructors
+    CREATE TRIGGER instructors_fts_rename AFTER UPDATE OF name ON instructors
     WHEN old.name IS NOT new.name BEGIN
       UPDATE videos_fts SET notes=${documentFor('(SELECT video_id FROM video_search_keys WHERE rowid=videos_fts.rowid)')}
       WHERE rowid IN (SELECT k.rowid FROM video_search_keys k JOIN video_instructors vi ON vi.video_id=k.video_id WHERE vi.instructor_id=new.id);
     END;
-    CREATE TRIGGER IF NOT EXISTS styles_fts_rename AFTER UPDATE OF name ON styles
+    CREATE TRIGGER styles_fts_rename AFTER UPDATE OF name ON styles
     WHEN old.name IS NOT new.name BEGIN
       UPDATE videos_fts SET notes=${documentFor('(SELECT video_id FROM video_search_keys WHERE rowid=videos_fts.rowid)')}
       WHERE rowid IN (SELECT k.rowid FROM video_search_keys k JOIN videos v ON v.id=k.video_id WHERE v.style_id=new.id);

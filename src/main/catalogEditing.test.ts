@@ -102,7 +102,7 @@ describe('catalog editing', () => {
   });
   it('rejects links to excluded videos', () => {
     const e = createCatalogEditor(db);
-    db.prepare(`UPDATE videos SET excluded_at=? WHERE id='demo'`).run(now);
+    db.prepare(`UPDATE videos SET excluded=1, excluded_at=? WHERE id='demo'`).run(now);
     expect(() => e.linkLessonDemo('lesson', 'demo')).toThrow(/Restore excluded/);
   });
   it('searches edited title, style, event, instructor, tag, and notes', () => {

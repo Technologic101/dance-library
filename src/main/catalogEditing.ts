@@ -233,13 +233,13 @@ export function createCatalogEditor(db: Database.Database) {
     linkLessonDemo(lessonId: string, demoId: string): void {
       if (lessonId === demoId) throw new Error('A video cannot link to itself.');
       const lesson = db
-        .prepare('SELECT video_type AS type, excluded_at AS excludedAt FROM videos WHERE id=?')
-        .get(lessonId) as { type: string | null; excludedAt: string | null } | undefined;
+        .prepare('SELECT video_type AS type, excluded FROM videos WHERE id=?')
+        .get(lessonId) as { type: string | null; excluded: number } | undefined;
       const demo = db
-        .prepare('SELECT video_type AS type, excluded_at AS excludedAt FROM videos WHERE id=?')
-        .get(demoId) as { type: string | null; excludedAt: string | null } | undefined;
+        .prepare('SELECT video_type AS type, excluded FROM videos WHERE id=?')
+        .get(demoId) as { type: string | null; excluded: number } | undefined;
       if (!lesson || !demo) throw new Error('Video not found.');
-      if (lesson.excludedAt || demo.excludedAt)
+      if (lesson.excluded || demo.excluded)
         throw new Error('Restore excluded videos before linking them.');
       if (lesson.type !== 'lesson' || demo.type !== 'demo')
         throw new Error('Links must point from a lesson to a demo.');
