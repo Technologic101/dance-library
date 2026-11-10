@@ -30,7 +30,9 @@ export function DetailPanel({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const first = useRef<HTMLInputElement>(null);
+  const styleInput = useRef<HTMLInputElement>(null);
   const eventInput = useRef<HTMLInputElement>(null);
+  const dateInput = useRef<HTMLInputElement>(null);
   const notesInput = useRef<HTMLTextAreaElement>(null);
   const panel = useRef<HTMLElement>(null);
   const mounted = useRef(true);
@@ -110,6 +112,12 @@ export function DetailPanel({
             continue;
           (patch as Values)[key] = values[key];
         }
+        const removeInstructorIds = dirty.has('removeInstructors')
+          ? await valueIds('instructor', String(values.removeInstructors ?? ''), false)
+          : undefined;
+        const removeTagIds = dirty.has('removeTags')
+          ? await valueIds('tag', String(values.removeTags ?? ''), false)
+          : undefined;
         if (dirty.has('styleName'))
           patch.styleId = String(values.styleName ?? '').trim()
             ? (await api.createCatalogValue('style', String(values.styleName))).id
@@ -120,16 +128,10 @@ export function DetailPanel({
             String(values.addInstructors ?? ''),
             true,
           );
-        if (dirty.has('removeInstructors'))
-          patch.removeInstructorIds = await valueIds(
-            'instructor',
-            String(values.removeInstructors ?? ''),
-            false,
-          );
+        if (removeInstructorIds) patch.removeInstructorIds = removeInstructorIds;
         if (dirty.has('addTags'))
           patch.addTagIds = await valueIds('tag', String(values.addTags ?? ''), true);
-        if (dirty.has('removeTags'))
-          patch.removeTagIds = await valueIds('tag', String(values.removeTags ?? ''), false);
+        if (removeTagIds) patch.removeTagIds = removeTagIds;
         const result = await api.bulkUpdateVideos(ids, patch);
         if (result.changed !== result.requested)
           throw new Error(
@@ -260,10 +262,27 @@ export function DetailPanel({
         api={api}
         kind="style"
         label="Style"
+        inputRef={styleInput}
         value={String(values.styleName ?? '')}
         placeholder={bulk && !dirty.has('styleName') ? mixed : ''}
-        onChange={(v) => set('styleName', v)}
+        onChange={(v) =>
+          bulk && !v ? leaveUnchanged('styleName', styleInput.current) : set('styleName', v)
+        }
       />
+      {bulk ? (
+        <div className="field-actions">
+          <button
+            type="button"
+            disabled={!dirty.has('styleName')}
+            onClick={() => leaveUnchanged('styleName', styleInput.current)}
+          >
+            Leave style unchanged
+          </button>
+          <button type="button" onClick={() => set('styleName', null)}>
+            Clear style on all
+          </button>
+        </div>
+      ) : null}
       {bulk ? (
         <>
           <CommonChips
@@ -315,18 +334,38 @@ export function DetailPanel({
           </button>
         ) : null}
       </div>
-      <label>
-        Date
+      <div className="combo-field">
+        <label htmlFor="catalog-date">Date</label>
         <input
+          id="catalog-date"
+          ref={dateInput}
           type="date"
           value={String(values.eventDate ?? '')}
           aria-label={`Date${bulk && !dirty.has('eventDate') && values.eventDate === undefined ? ' (mixed or unchanged)' : ''}`}
-          onChange={(e) => set('eventDate', e.target.value || null)}
+          onChange={(e) =>
+            bulk && !e.target.value
+              ? leaveUnchanged('eventDate', dateInput.current)
+              : set('eventDate', e.target.value)
+          }
         />
         {bulk && !dirty.has('eventDate') && values.eventDate === undefined ? (
           <small>{mixed}</small>
         ) : null}
-      </label>
+        {bulk ? (
+          <div className="field-actions">
+            <button
+              type="button"
+              disabled={!dirty.has('eventDate')}
+              onClick={() => leaveUnchanged('eventDate', dateInput.current)}
+            >
+              Leave date unchanged
+            </button>
+            <button type="button" onClick={() => set('eventDate', null)}>
+              Clear date on all
+            </button>
+          </div>
+        ) : null}
+      </div>
       {bulk ? (
         <>
           <CommonChips
@@ -437,6 +476,7 @@ function CatalogCombo({
   label,
   value,
   placeholder = '',
+  inputRef,
   onChange,
 }: {
   api: DanceLibraryApi;
@@ -444,6 +484,7 @@ function CatalogCombo({
   label: string;
   value: string;
   placeholder?: string;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
   onChange: (v: string) => void;
 }) {
   const id = useId(),
@@ -490,6 +531,7 @@ function CatalogCombo({
     <div className="combo-field">
       <label htmlFor={`${id}-input`}>{label}</label>
       <input
+        ref={inputRef}
         id={`${id}-input`}
         role="combobox"
         aria-autocomplete="list"
@@ -511,7 +553,7 @@ function CatalogCombo({
           setActive(-1);
         }}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && open) {
+          if (e.key === 'Escape' && optionsOpen) {
             e.preventDefault();
             e.stopPropagation();
             setOpen(false);
@@ -665,7 +707,7 @@ function LinkPicker({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Escape') {
+              if (e.key === 'Escape' && (q || options.length > 0)) {
                 e.preventDefault();
                 e.stopPropagation();
                 setQ('');
