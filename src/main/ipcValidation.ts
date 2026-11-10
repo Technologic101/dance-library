@@ -7,7 +7,7 @@ import {
 } from '../shared/api';
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
-const DATE = /^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/;
+const DATE = /^(\d{4})-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/;
 const scalar = {
   title: 300,
   videoType: 0,
@@ -82,12 +82,7 @@ export function parseVideoUpdate(value: unknown, bulk = false): VideoUpdate | Bu
         if (item !== null && (typeof item !== 'string' || !levels.some((level) => level === item)))
           throw new Error('Invalid level.');
       } else if (key === 'eventDate') {
-        if (
-          item !== null &&
-          (typeof item !== 'string' ||
-            !DATE.test(item) ||
-            Number.isNaN(Date.parse(`${item}T00:00:00Z`)))
-        )
+        if (item !== null && (typeof item !== 'string' || !validCalendarDate(item)))
           throw new Error('eventDate must be YYYY-MM-DD or null.');
       } else if (key === 'styleId') {
         if (item !== null) videoId(item);
@@ -105,4 +100,16 @@ export function parseVideoUpdate(value: unknown, bulk = false): VideoUpdate | Bu
     }
   if (!Object.keys(out).length) throw new Error('Update has no fields.');
   return out as VideoUpdate | BulkVideoUpdate;
+}
+
+function validCalendarDate(value: string): boolean {
+  const match = DATE.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]),
+    month = Number(match[2]),
+    day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
 }

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { openCatalog } from './db/catalog';
 import { createLibraryService } from './libraryService';
 import type { ScanDeps } from './indexer/scan';
+import { createRepository } from './indexer/repository';
 
 const directories: string[] = [];
 const databases: Database.Database[] = [];
@@ -63,6 +64,22 @@ function idleDeps(): ScanDeps {
 }
 
 describe('createLibraryService', () => {
+  it('applies single and bulk edits through merged video redirects', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    for (const id of ['keep', 'drop'])
+      db.prepare(`INSERT INTO videos(id,created_at,updated_at) VALUES(?, 't','t')`).run(id);
+    createRepository(db).mergeVideos('keep', ['drop'], 'now');
+    const service = createLibraryService(db, tempDir(), idleDeps());
+    await service.updateVideo('drop', { title: 'Redirected' });
+    expect(service.getVideoDetails('keep').title).toBe('Redirected');
+    const tag = service.createCatalogValue('tag', 'Merged tag');
+    expect(await service.bulkUpdateVideos(['drop'], { addTagIds: [tag.id] })).toEqual({
+      changed: 1,
+      requested: 1,
+    });
+    expect(service.getVideoDetails('keep').tags.map((x) => x.name)).toEqual(['Merged tag']);
+  });
   it('rejects a missing folder, a duplicate, and a nested folder', async () => {
     const root = tempDir();
     const child = path.join(root, 'lessons');

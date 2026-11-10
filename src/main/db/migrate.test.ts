@@ -104,13 +104,14 @@ describe('applyMigrations', () => {
 
 describe('migrate', () => {
   it('ships a contiguous list and applies it', () => {
-    expect(migrations.map((migration) => migration.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(migrations.map((migration) => migration.id)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(migrations[0]?.name).toBe('001_init');
     expect(migrations[1]?.name).toBe('002_catalog');
     expect(migrations[2]?.name).toBe('003_content_identity');
     expect(migrations[3]?.name).toBe('004_path_key');
     expect(migrations[4]?.name).toBe('005_search');
     expect(migrations[5]?.name).toBe('006_catalog_editing');
+    expect(migrations[6]?.name).toBe('007_catalog_editing_fixes');
     const db = openMemory();
     expect(migrate(db)).toEqual([
       '001_init',
@@ -119,6 +120,7 @@ describe('migrate', () => {
       '004_path_key',
       '005_search',
       '006_catalog_editing',
+      '007_catalog_editing_fixes',
     ]);
     expect(migrate(db)).toEqual([]);
   });

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrate } from './db/migrate';
 import { createCatalogEditor } from './catalogEditing';
 import { createRepository } from './indexer/repository';
+import { repairSearchIndex } from './db/searchIndex';
 
 let db: Database.Database;
 beforeEach(() => {
@@ -91,6 +92,13 @@ describe('catalog editing', () => {
     e.unlinkLessonDemo('lesson', 'demo');
     expect(e.getVideoDetails('lesson').lessonDemos).toEqual([]);
   });
+  it('unlinks an unordered pair and blocks retyping while linked', () => {
+    const e = createCatalogEditor(db);
+    e.linkLessonDemo('lesson', 'demo');
+    expect(() => e.updateVideo('lesson', { videoType: 'social dance' })).toThrow(/Unlink/);
+    e.unlinkLessonDemo('demo', 'lesson');
+    expect(e.getVideoDetails('lesson').lessonDemos).toEqual([]);
+  });
   it('searches edited title, style, event, instructor, tag, and notes', () => {
     const e = createCatalogEditor(db),
       repo = createRepository(db);
@@ -110,6 +118,26 @@ describe('catalog editing', () => {
         repo.listVideoSummaries({ text: term }).map((x) => x.id),
         term,
       ).toContain('lesson');
+  });
+  it('repairs composite search and removes cleared style and instructor terms', () => {
+    const e = createCatalogEditor(db),
+      repo = createRepository(db);
+    const style = e.createValue('style', 'Repair Zouk'),
+      teacher = e.createValue('instructor', 'Repair Alice');
+    e.updateVideo('lesson', {
+      styleId: style.id,
+      eventName: 'Repair Congress',
+      instructorIds: [teacher.id],
+    });
+    db.prepare(
+      `DELETE FROM videos_fts WHERE rowid=(SELECT rowid FROM video_search_keys WHERE video_id='lesson')`,
+    ).run();
+    repairSearchIndex(db);
+    for (const term of ['Repair', 'Congress', 'Alice'])
+      expect(repo.listVideoSummaries({ text: term }).map((x) => x.id)).toContain('lesson');
+    e.updateVideo('lesson', { styleId: null, instructorIds: [] });
+    expect(repo.listVideoSummaries({ text: 'Zouk' }).map((x) => x.id)).not.toContain('lesson');
+    expect(repo.listVideoSummaries({ text: 'Alice' }).map((x) => x.id)).not.toContain('lesson');
   });
   it('keeps edits shared by every location and technical rescans do not overwrite them', () => {
     const e = createCatalogEditor(db),

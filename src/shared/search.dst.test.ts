@@ -8,7 +8,7 @@ describe('local day bounds in Los Angeles', () => {
       process.execPath,
       [path.join(import.meta.dirname, 'dstBounds.check.mjs')],
       {
-        env: { ...process.env, TZ: 'America/Los_Angeles' },
+        env: { ...process.env, TZ: 'PST8PDT' },
         encoding: 'utf8',
       },
     );

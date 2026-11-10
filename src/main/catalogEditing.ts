@@ -97,6 +97,13 @@ export function createCatalogEditor(db: Database.Database) {
       Object.prototype.hasOwnProperty.call(patch, key),
     );
     if (!entries.length) return;
+    if (
+      Object.prototype.hasOwnProperty.call(patch, 'videoType') &&
+      db
+        .prepare(`SELECT 1 FROM video_links WHERE video_id=? OR other_video_id=? LIMIT 1`)
+        .get(id, id)
+    )
+      throw new Error('Unlink lesson/demo videos before changing their type.');
     const params: Record<string, unknown> = { id, now: new Date().toISOString() };
     const set = entries.map(([key, column]) => {
       const value = (patch as unknown as Record<string, unknown>)[key];
@@ -120,6 +127,19 @@ export function createCatalogEditor(db: Database.Database) {
     for (const id of ids) insert.run(videoId, id);
   }
 
+  const exists = db.prepare('SELECT 1 FROM videos WHERE id=?');
+  const relationStatements = {
+    addInstructorIds: db.prepare(
+      'INSERT OR IGNORE INTO video_instructors (video_id,instructor_id) VALUES (?,?)',
+    ),
+    removeInstructorIds: db.prepare(
+      'DELETE FROM video_instructors WHERE video_id=? AND instructor_id=?',
+    ),
+    addTagIds: db.prepare('INSERT OR IGNORE INTO video_tags (video_id,tag_id) VALUES (?,?)'),
+    removeTagIds: db.prepare('DELETE FROM video_tags WHERE video_id=? AND tag_id=?'),
+  };
+  const touch = db.prepare('UPDATE videos SET updated_at=? WHERE id=?');
+
   return {
     getVideoDetails: details,
     updateVideo(id: string, patch: VideoUpdate): VideoDetails {
@@ -132,33 +152,48 @@ export function createCatalogEditor(db: Database.Database) {
       return details(id);
     },
     bulkUpdate(ids: readonly string[], patch: BulkVideoUpdate): number {
+      for (const [add, remove] of [
+        [patch.addInstructorIds, patch.removeInstructorIds],
+        [patch.addTagIds, patch.removeTagIds],
+      ] as const)
+        if (add?.some((id) => remove?.includes(id)))
+          throw new Error('The same value cannot be both added and removed.');
       let changed = 0;
       db.transaction(() => {
-        const operations = [
-          ['addInstructorIds', 'video_instructors', 'instructor_id', 'INSERT OR IGNORE'],
-          ['removeInstructorIds', 'video_instructors', 'instructor_id', 'DELETE'],
-          ['addTagIds', 'video_tags', 'tag_id', 'INSERT OR IGNORE'],
-          ['removeTagIds', 'video_tags', 'tag_id', 'DELETE'],
-        ] as const;
+        const relationKeys = Object.keys(relationStatements) as (keyof typeof relationStatements)[];
         for (const id of ids) {
-          if (!db.prepare('SELECT 1 FROM videos WHERE id=?').get(id)) continue;
+          if (!exists.get(id)) continue;
           setScalars(id, patch);
           changed++;
-          for (const [key, table, column, verb] of operations)
-            for (const value of patch[key] ?? []) {
-              if (verb === 'DELETE')
-                db.prepare(`DELETE FROM ${table} WHERE video_id=? AND ${column}=?`).run(id, value);
-              else
-                db.prepare(`${verb} INTO ${table} (video_id,${column}) VALUES (?,?)`).run(
-                  id,
-                  value,
-                );
-            }
+          let relationChanged = false;
+          for (const key of relationKeys)
+            for (const value of patch[key] ?? [])
+              relationChanged =
+                relationStatements[key].run(id, value).changes > 0 || relationChanged;
+          if (
+            relationChanged &&
+            !Object.keys(patch).some(
+              (key) =>
+                key in
+                {
+                  title: 1,
+                  videoType: 1,
+                  styleId: 1,
+                  level: 1,
+                  eventName: 1,
+                  eventDate: 1,
+                  rating: 1,
+                  favorite: 1,
+                  notes: 1,
+                },
+            )
+          )
+            touch.run(new Date().toISOString(), id);
         }
       })();
       return changed;
     },
-    searchValues(kind: CatalogValueKind, query: string, limit = 30): CatalogValue[] {
+    searchValues(kind: CatalogValueKind, query: string, limit = 100): CatalogValue[] {
       const table = tables[kind];
       const term = query.trim();
       return db
@@ -208,14 +243,17 @@ export function createCatalogEditor(db: Database.Database) {
         db.prepare(
           `INSERT INTO video_links (id,video_id,other_video_id,kind,created_at) VALUES (?,?,?,'lesson_demo',?)`,
         ).run(randomUUID(), lessonId, demoId, new Date().toISOString());
-      } catch {
-        throw new Error('That lesson and demo are already linked.');
+      } catch (error) {
+        if (error instanceof Error && /UNIQUE/.test(error.message))
+          throw new Error('That lesson and demo are already linked.');
+        throw error;
       }
     },
     unlinkLessonDemo(lessonId: string, demoId: string): void {
       db.prepare(
-        `DELETE FROM video_links WHERE video_id=? AND other_video_id=? AND kind='lesson_demo'`,
-      ).run(lessonId, demoId);
+        `DELETE FROM video_links WHERE kind='lesson_demo'
+         AND ((video_id=? AND other_video_id=?) OR (video_id=? AND other_video_id=?))`,
+      ).run(lessonId, demoId, demoId, lessonId);
     },
   };
 }

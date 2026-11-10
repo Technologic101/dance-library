@@ -19,6 +19,24 @@ afterEach(() => {
 });
 
 describe('catalog schema', () => {
+  it('adds Phase 3 built-in styles when upgrading v5 without duplicating a user style', () => {
+    const db = openMemory();
+    applyMigrations(db, migrations.slice(0, 5));
+    db.prepare(
+      `INSERT INTO styles(id,name,builtin,created_at) VALUES('user-zouk','Brazilian Zouk',0,'t')`,
+    ).run();
+    expect(migrate(db)).toEqual(['006_catalog_editing', '007_catalog_editing_fixes']);
+    for (const name of [
+      'Kizomba Fusion',
+      'Salsa On1',
+      'Salsa On2',
+      'Brazilian Zouk',
+      'Zouk Lambada',
+    ]) {
+      const rows = db.prepare('SELECT id FROM styles WHERE name=? COLLATE NOCASE').all(name);
+      expect(rows, name).toHaveLength(1);
+    }
+  });
   it('upgrades a phase 0 database and keeps the references-only policy', () => {
     const db = openMemory();
     applyMigrations(db, [migration001]);
@@ -28,6 +46,7 @@ describe('catalog schema', () => {
       '004_path_key',
       '005_search',
       '006_catalog_editing',
+      '007_catalog_editing_fixes',
     ]);
     expect(migrate(db)).toEqual([]);
 
@@ -112,6 +131,7 @@ describe('catalog schema', () => {
       '004_path_key',
       '005_search',
       '006_catalog_editing',
+      '007_catalog_editing_fixes',
     ]);
     const video = db.prepare(`SELECT title, notes, favorite, excluded FROM videos`).get() as {
       title: string;
@@ -195,7 +215,7 @@ describe('catalog schema', () => {
     db.prepare(`INSERT INTO tags (id, name, created_at) VALUES ('tag-wave', 'wave', 't')`).run();
     db.prepare(`INSERT INTO video_tags (video_id, tag_id) VALUES ('vid', 'tag-wave')`).run();
 
-    expect(migrate(db)).toEqual(['005_search', '006_catalog_editing']);
+    expect(migrate(db)).toEqual(['005_search', '006_catalog_editing', '007_catalog_editing_fixes']);
     const repo = createRepository(db);
     expect(repo.listVideoSummaries({ text: 'kizomba' }).map((item) => item.id)).toEqual(['vid']);
     expect(repo.listVideoSummaries({ text: 'copy' }).map((item) => item.id)).toEqual(['vid']);

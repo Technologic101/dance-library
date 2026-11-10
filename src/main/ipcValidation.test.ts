@@ -22,6 +22,7 @@ describe('catalog IPC validation', () => {
     { rating: 0 },
     { rating: 6 },
     { eventDate: '03/10/2024' },
+    { eventDate: '2024-02-30' },
     { videoType: 'class' },
     { favorite: 1 },
     { notes: 'x'.repeat(10001) },

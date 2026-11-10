@@ -70,13 +70,16 @@ export function createLibraryService(
     },
 
     getVideoDetails(id: string) {
-      return editor.getVideoDetails(id);
+      return editor.getVideoDetails(repo.resolveVideoId(id));
     },
     updateVideo(id: string, patch: VideoUpdate) {
-      return editor.updateVideo(id, patch);
+      return enqueue(async () => editor.updateVideo(repo.resolveVideoId(id), patch));
     },
-    bulkUpdateVideos(ids: readonly string[], patch: BulkVideoUpdate): VideoChangeResult {
-      return { changed: editor.bulkUpdate(ids, patch), requested: ids.length };
+    bulkUpdateVideos(ids: readonly string[], patch: BulkVideoUpdate): Promise<VideoChangeResult> {
+      return enqueue(async () => {
+        const resolved = [...new Set(ids.map((id) => repo.resolveVideoId(id)))];
+        return { changed: editor.bulkUpdate(resolved, patch), requested: resolved.length };
+      });
     },
     searchCatalogValues(kind: CatalogValueKind, query: string) {
       return editor.searchValues(kind, query);
@@ -85,10 +88,14 @@ export function createLibraryService(
       return editor.createValue(kind, name);
     },
     linkLessonDemo(lessonId: string, demoId: string) {
-      editor.linkLessonDemo(lessonId, demoId);
+      return enqueue(async () =>
+        editor.linkLessonDemo(repo.resolveVideoId(lessonId), repo.resolveVideoId(demoId)),
+      );
     },
     unlinkLessonDemo(lessonId: string, demoId: string) {
-      editor.unlinkLessonDemo(lessonId, demoId);
+      return enqueue(async () =>
+        editor.unlinkLessonDemo(repo.resolveVideoId(lessonId), repo.resolveVideoId(demoId)),
+      );
     },
 
     excludeVideos(ids: readonly string[]): Promise<VideoChangeResult> {

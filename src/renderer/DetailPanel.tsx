@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   levels,
   videoTypes,
   type BulkVideoUpdate,
   type CatalogValue,
+  type CatalogValueKind,
   type DanceLibraryApi,
   type VideoDetails,
   type VideoUpdate,
 } from '../shared/api';
+
+type Values = Record<string, unknown>;
 
 export function DetailPanel({
   api,
@@ -21,84 +24,154 @@ export function DetailPanel({
   onSaved: () => Promise<void>;
 }) {
   const bulk = ids.length > 1;
-  const [detail, setDetail] = useState<VideoDetails | null>(null);
-  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [details, setDetails] = useState<VideoDetails[]>([]);
+  const [values, setValues] = useState<Values>({});
   const [dirty, setDirty] = useState<Set<string>>(new Set());
-  const [styles, setStyles] = useState<CatalogValue[]>([]);
   const [error, setError] = useState<string | null>(null);
   const first = useRef<HTMLInputElement>(null);
+  const panel = useRef<HTMLElement>(null);
   useEffect(() => {
-    Promise.all([api.getVideoDetails(ids[0]!), api.searchCatalogValues('style', '')])
-      .then(([d, s]) => {
-        setDetail(d);
-        setStyles(s);
-        setValues(fromDetail(d));
+    let cancelled = false;
+    setDetails([]);
+    setValues({});
+    setDirty(new Set());
+    setError(null);
+    Promise.all(ids.map((id) => api.getVideoDetails(id)))
+      .then((loaded) => {
+        if (cancelled) return;
+        setDetails(loaded);
+        setValues(bulk ? commonValues(loaded) : fromDetail(loaded[0]!));
         queueMicrotask(() => first.current?.focus());
       })
-      .catch((e) => setError(String(e)));
-  }, [api, ids]);
+      .catch((e) => {
+        if (!cancelled) setError(message(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, bulk, ids]);
+  const detail = details[0];
   function set(key: string, value: unknown) {
     setValues((v) => ({ ...v, [key]: value }));
     setDirty((d) => new Set(d).add(key));
   }
-  async function idsFor(kind: 'instructor' | 'tag', names: string): Promise<string[]> {
-    const result = [];
+  async function valueIds(kind: CatalogValueKind, names: string): Promise<string[]> {
+    const out: string[] = [];
     for (const raw of names.split(',')) {
       const name = raw.trim();
-      if (name) result.push((await api.createCatalogValue(kind, name)).id);
+      if (name) out.push((await api.createCatalogValue(kind, name)).id);
     }
-    return result;
+    return [...new Set(out)];
   }
   async function save() {
     try {
       setError(null);
-      const styleName = String(values.styleName ?? '').trim();
-      if (styleName && !styles.some((s) => s.id === values.styleId))
-        values.styleId = (await api.createCatalogValue('style', styleName)).id;
       if (bulk) {
         const patch: BulkVideoUpdate = {};
-        for (const key of dirty)
-          if (key !== 'instructors' && key !== 'tags')
-            (patch as unknown as Record<string, unknown>)[key] = values[key];
-        if (dirty.has('instructors'))
-          patch.addInstructorIds = await idsFor('instructor', String(values.instructors ?? ''));
-        if (dirty.has('tags')) patch.addTagIds = await idsFor('tag', String(values.tags ?? ''));
-        await api.bulkUpdateVideos(ids, patch);
+        for (const key of dirty) {
+          if (
+            ['addInstructors', 'removeInstructors', 'addTags', 'removeTags', 'styleName'].includes(
+              key,
+            )
+          )
+            continue;
+          (patch as Values)[key] = values[key];
+        }
+        if (dirty.has('styleName'))
+          patch.styleId = String(values.styleName ?? '').trim()
+            ? (await api.createCatalogValue('style', String(values.styleName))).id
+            : null;
+        if (dirty.has('addInstructors'))
+          patch.addInstructorIds = await valueIds(
+            'instructor',
+            String(values.addInstructors ?? ''),
+          );
+        if (dirty.has('removeInstructors'))
+          patch.removeInstructorIds = await valueIds(
+            'instructor',
+            String(values.removeInstructors ?? ''),
+          );
+        if (dirty.has('addTags'))
+          patch.addTagIds = await valueIds('tag', String(values.addTags ?? ''));
+        if (dirty.has('removeTags'))
+          patch.removeTagIds = await valueIds('tag', String(values.removeTags ?? ''));
+        const result = await api.bulkUpdateVideos(ids, patch);
+        if (result.changed !== result.requested)
+          throw new Error(
+            `Updated ${result.changed} of ${result.requested} videos. The selection changed; please review it.`,
+          );
       } else {
         const patch: VideoUpdate = {};
-        for (const key of [
-          'title',
-          'videoType',
-          'styleId',
-          'level',
-          'eventName',
-          'eventDate',
-          'rating',
-          'favorite',
-          'notes',
-        ])
-          (patch as unknown as Record<string, unknown>)[key] =
-            values[key] || (key === 'favorite' ? false : null);
-        patch.instructorIds = await idsFor('instructor', String(values.instructors ?? ''));
-        patch.tagIds = await idsFor('tag', String(values.tags ?? ''));
-        await api.updateVideo(ids[0]!, patch);
+        for (const key of dirty) {
+          if (['instructors', 'tags', 'styleName'].includes(key)) continue;
+          (patch as Values)[key] = values[key];
+        }
+        if (dirty.has('styleName'))
+          patch.styleId = String(values.styleName ?? '').trim()
+            ? (await api.createCatalogValue('style', String(values.styleName))).id
+            : null;
+        if (dirty.has('instructors'))
+          patch.instructorIds = await valueIds('instructor', String(values.instructors ?? ''));
+        if (dirty.has('tags')) patch.tagIds = await valueIds('tag', String(values.tags ?? ''));
+        if (Object.keys(patch).length) await api.updateVideo(ids[0]!, patch);
       }
       await onSaved();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(message(e));
     }
   }
   if (!detail)
     return (
-      <aside className="detail-panel" aria-label="Catalog editor">
+      <aside className="detail-panel" role="dialog" aria-modal="true" aria-label="Catalog editor">
         <p>{error ?? 'Loading details…'}</p>
       </aside>
     );
-  const mixed = bulk ? '— Mixed / unchanged —' : '';
+  const mixed = '— Mixed / unchanged —';
+  const select = (
+    key: string,
+    label: string,
+    choices: readonly (string | number)[],
+    clear: string,
+  ) => (
+    <label>
+      {label}
+      <select
+        value={dirty.has(key) || !bulk ? String(values[key] ?? '') : '__unchanged'}
+        onChange={(e) => {
+          if (e.target.value === '__unchanged') {
+            setDirty((d) => {
+              const n = new Set(d);
+              n.delete(key);
+              return n;
+            });
+          } else
+            set(
+              key,
+              e.target.value === ''
+                ? null
+                : key === 'rating'
+                  ? Number(e.target.value)
+                  : e.target.value,
+            );
+        }}
+      >
+        <option value="__unchanged" hidden={!bulk}>
+          {mixed}
+        </option>
+        <option value="">{clear}</option>
+        {choices.map((x) => (
+          <option key={x}>{x}</option>
+        ))}
+      </select>
+    </label>
+  );
   return (
     <aside
+      ref={panel}
       className="detail-panel"
+      role="dialog"
+      aria-modal="true"
       aria-label={bulk ? `Bulk edit ${ids.length} videos` : `Edit ${detail.displayTitle}`}
       onKeyDown={(e) => {
         if (e.key === 'Escape') onClose();
@@ -106,9 +179,10 @@ export function DetailPanel({
           e.preventDefault();
           void save();
         }
-        const typing = (e.target as HTMLElement).matches('input, textarea');
+        const typing = (e.target as HTMLElement).matches('input, textarea, select');
         if (!typing && /^[1-5]$/.test(e.key)) set('rating', Number(e.key));
         if (!typing && e.key.toLowerCase() === 'f') set('favorite', !values.favorite);
+        if (e.key === 'Tab') trapTab(e, panel.current);
       }}
     >
       <div className="detail-head">
@@ -123,72 +197,56 @@ export function DetailPanel({
         <input
           ref={first}
           value={String(values.title ?? '')}
-          placeholder={mixed || detail.displayTitle}
+          placeholder={bulk && !dirty.has('title') ? mixed : detail.displayTitle}
           onChange={(e) => set('title', e.target.value || null)}
         />
       </label>
-      <label>
-        Type
-        <select
-          value={String(values.videoType ?? '')}
-          onChange={(e) => set('videoType', e.target.value || null)}
-        >
-          <option value="">{mixed || 'None'}</option>
-          {videoTypes.map((x) => (
-            <option key={x}>{x}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Style
-        <input
-          role="combobox"
-          aria-controls="style-options"
-          list="style-options"
-          value={String(values.styleName ?? '')}
-          placeholder={mixed}
-          onChange={(e) => {
-            const name = e.target.value;
-            setValues((v) => ({ ...v, styleName: name }));
-            const found = styles.find(
-              (s) => s.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
-            );
-            set('styleId', found?.id ?? null);
-          }}
-        />
-        <datalist id="style-options">
-          {styles.map((x) => (
-            <option key={x.id} value={x.name} />
-          ))}
-        </datalist>
-      </label>
-      <label>
-        Instructors
-        <input
-          role="combobox"
-          aria-label="Instructors (comma separated)"
+      {select('videoType', 'Type', videoTypes, 'Clear type')}
+      <CatalogCombo
+        api={api}
+        kind="style"
+        label="Style"
+        value={String(values.styleName ?? '')}
+        placeholder={bulk && !dirty.has('styleName') ? mixed : ''}
+        onChange={(v) => set('styleName', v)}
+      />
+      {bulk ? (
+        <>
+          <CommonChips
+            label="Instructors on every selected video"
+            values={intersection(details.map((d) => d.instructors))}
+            onRemove={(name) => set('removeInstructors', append(values.removeInstructors, name))}
+          />
+          <CatalogCombo
+            api={api}
+            kind="instructor"
+            label="Add instructors"
+            value={String(values.addInstructors ?? '')}
+            onChange={(v) => set('addInstructors', v)}
+          />
+          <CatalogCombo
+            api={api}
+            kind="instructor"
+            label="Remove instructors"
+            value={String(values.removeInstructors ?? '')}
+            onChange={(v) => set('removeInstructors', v)}
+          />
+        </>
+      ) : (
+        <CatalogCombo
+          api={api}
+          kind="instructor"
+          label="Instructors (comma separated)"
           value={String(values.instructors ?? '')}
-          placeholder={mixed || 'Type a name, comma to add another'}
-          onChange={(e) => set('instructors', e.target.value)}
+          onChange={(v) => set('instructors', v)}
         />
-      </label>
-      <label>
-        Level
-        <select
-          value={String(values.level ?? '')}
-          onChange={(e) => set('level', e.target.value || null)}
-        >
-          <option value="">{mixed || 'None'}</option>
-          {levels.map((x) => (
-            <option key={x}>{x}</option>
-          ))}
-        </select>
-      </label>
+      )}
+      {select('level', 'Level', levels, 'Clear level')}
       <label>
         Event
         <input
           value={String(values.eventName ?? '')}
-          placeholder={mixed}
+          placeholder={bulk && !dirty.has('eventName') ? mixed : ''}
           onChange={(e) => set('eventName', e.target.value || null)}
         />
       </label>
@@ -200,41 +258,73 @@ export function DetailPanel({
           onChange={(e) => set('eventDate', e.target.value || null)}
         />
       </label>
-      <label>
-        Tags
-        <input
-          role="combobox"
-          aria-label="Tags (comma separated)"
+      {bulk ? (
+        <>
+          <CommonChips
+            label="Tags on every selected video"
+            values={intersection(details.map((d) => d.tags))}
+            onRemove={(name) => set('removeTags', append(values.removeTags, name))}
+          />
+          <CatalogCombo
+            api={api}
+            kind="tag"
+            label="Add tags"
+            value={String(values.addTags ?? '')}
+            onChange={(v) => set('addTags', v)}
+          />
+          <CatalogCombo
+            api={api}
+            kind="tag"
+            label="Remove tags"
+            value={String(values.removeTags ?? '')}
+            onChange={(v) => set('removeTags', v)}
+          />
+        </>
+      ) : (
+        <CatalogCombo
+          api={api}
+          kind="tag"
+          label="Tags (comma separated)"
           value={String(values.tags ?? '')}
-          placeholder={mixed || 'Type a tag, comma to add another'}
-          onChange={(e) => set('tags', e.target.value)}
+          onChange={(v) => set('tags', v)}
         />
-      </label>
-      <label>
-        Rating
-        <select
-          value={String(values.rating ?? '')}
-          onChange={(e) => set('rating', e.target.value ? Number(e.target.value) : null)}
-        >
-          <option value="">{mixed || 'Unrated'}</option>
-          {[1, 2, 3, 4, 5].map((x) => (
-            <option key={x}>{x}</option>
-          ))}
-        </select>
-      </label>
-      <label className="favorite-toggle">
-        <input
-          type="checkbox"
-          checked={Boolean(values.favorite)}
-          onChange={(e) => set('favorite', e.target.checked)}
-        />{' '}
-        Favorite
-      </label>
+      )}
+      {select('rating', 'Rating', [1, 2, 3, 4, 5], 'Clear rating')}
+      {bulk ? (
+        <label className="favorite-toggle">
+          Favorite
+          <select
+            value={dirty.has('favorite') ? String(values.favorite) : '__unchanged'}
+            onChange={(e) => {
+              if (e.target.value === '__unchanged')
+                setDirty((d) => {
+                  const next = new Set(d);
+                  next.delete('favorite');
+                  return next;
+                });
+              else set('favorite', e.target.value === 'true');
+            }}
+          >
+            <option value="__unchanged">{mixed}</option>
+            <option value="true">Favorite</option>
+            <option value="false">Not favorite</option>
+          </select>
+        </label>
+      ) : (
+        <label className="favorite-toggle">
+          <input
+            type="checkbox"
+            checked={Boolean(values.favorite)}
+            onChange={(e) => set('favorite', e.target.checked)}
+          />{' '}
+          Favorite
+        </label>
+      )}
       <label>
         Notes
         <textarea
           value={String(values.notes ?? '')}
-          placeholder={mixed}
+          placeholder={bulk && !dirty.has('notes') ? mixed : ''}
           onChange={(e) => set('notes', e.target.value || null)}
         />
       </label>
@@ -242,13 +332,14 @@ export function DetailPanel({
         <LinkPicker
           api={api}
           detail={detail}
-          onChanged={() => api.getVideoDetails(detail.id).then(setDetail)}
+          onChanged={() => api.getVideoDetails(detail.id).then((d) => setDetails([d]))}
+          onError={setError}
         />
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
       <div className="detail-actions">
         <button onClick={onClose}>Cancel</button>
-        <button className="primary" onClick={() => void save()} disabled={bulk && dirty.size === 0}>
+        <button className="primary" onClick={() => void save()} disabled={dirty.size === 0}>
           Save
         </button>
       </div>
@@ -256,11 +347,234 @@ export function DetailPanel({
   );
 }
 
-function fromDetail(d: VideoDetails): Record<string, unknown> {
+function CatalogCombo({
+  api,
+  kind,
+  label,
+  value,
+  placeholder = '',
+  onChange,
+}: {
+  api: DanceLibraryApi;
+  kind: CatalogValueKind;
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChange: (v: string) => void;
+}) {
+  const id = useId(),
+    [options, setOptions] = useState<CatalogValue[]>([]),
+    [open, setOpen] = useState(false),
+    [active, setActive] = useState(0),
+    seq = useRef(0);
+  const token = value.split(',').at(-1)?.trim() ?? '';
+  useEffect(() => {
+    const current = ++seq.current;
+    const timer = setTimeout(() => {
+      api
+        .searchCatalogValues(kind, token)
+        .then((v) => {
+          if (current === seq.current) {
+            setOptions(v);
+            setActive(0);
+            setOpen(v.length > 0);
+          }
+        })
+        .catch(() => {});
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [api, kind, token]);
+  function accept(name: string) {
+    const parts = value.split(',');
+    parts[parts.length - 1] = ` ${name}`;
+    onChange(parts.join(',').replace(/^ /, ''));
+    setOpen(false);
+  }
+  return (
+    <label>
+      {label}
+      <input
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls={id}
+        aria-activedescendant={open ? `${id}-${active}` : undefined}
+        value={value}
+        placeholder={placeholder || 'Type a name; comma adds another'}
+        onFocus={() => setOpen(options.length > 0)}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (!open) return;
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            setActive(
+              (a) => (a + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length,
+            );
+          }
+          if (e.key === 'Enter' || e.key === 'Tab') {
+            if (options[active]) {
+              if (e.key === 'Enter') e.preventDefault();
+              accept(options[active].name);
+            }
+          }
+        }}
+      />
+      {open ? (
+        <ul id={id} role="listbox" className="combo-options">
+          {options.map((x, i) => (
+            <li
+              id={`${id}-${i}`}
+              key={x.id}
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                accept(x.name);
+              }}
+            >
+              {x.name}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </label>
+  );
+}
+
+function CommonChips({
+  label,
+  values,
+  onRemove,
+}: {
+  label: string;
+  values: CatalogValue[];
+  onRemove: (name: string) => void;
+}) {
+  return (
+    <div className="common-values">
+      <span>{label}</span>
+      {values.length ? (
+        values.map((x) => (
+          <button key={x.id} onClick={() => onRemove(x.name)} aria-label={`Remove ${x.name}`}>
+            {x.name} ×
+          </button>
+        ))
+      ) : (
+        <small>None in common</small>
+      )}
+    </div>
+  );
+}
+
+function LinkPicker({
+  api,
+  detail,
+  onChanged,
+  onError,
+}: {
+  api: DanceLibraryApi;
+  detail: VideoDetails;
+  onChanged: () => void;
+  onError: (e: string | null) => void;
+}) {
+  const [q, setQ] = useState(''),
+    [options, setOptions] = useState<
+      { id: string; displayTitle: string; videoType: string | null }[]
+    >([]),
+    [active, setActive] = useState(0),
+    seq = useRef(0);
+  const wanted = detail.videoType === 'lesson' ? 'demo' : 'lesson';
+  useEffect(() => {
+    if (!q) {
+      setOptions([]);
+      return;
+    }
+    const current = ++seq.current,
+      t = setTimeout(() => {
+        api
+          .listVideos({ text: q, videoTypes: [wanted as 'lesson' | 'demo'], limit: 12 })
+          .then((r) => {
+            if (current === seq.current)
+              setOptions(
+                r.items.filter(
+                  (x) => x.id !== detail.id && !detail.lessonDemos.some((l) => l.id === x.id),
+                ),
+              );
+          })
+          .catch((e) => onError(message(e)));
+      }, 150);
+    return () => clearTimeout(t);
+  }, [api, detail, q, wanted, onError]);
+  function link(id: string) {
+    const lesson = detail.videoType === 'lesson' ? detail.id : id,
+      demo = detail.videoType === 'demo' ? detail.id : id;
+    api
+      .linkLessonDemo(lesson, demo)
+      .then(() => {
+        setQ('');
+        onChanged();
+      })
+      .catch((e) => onError(message(e)));
+  }
+  return (
+    <fieldset>
+      <legend>Lesson/demo links</legend>
+      {detail.lessonDemos.map((x) => (
+        <div key={x.id} className="linked-item">
+          {x.title}
+          <button
+            onClick={() =>
+              api
+                .unlinkLessonDemo(detail.id, x.id)
+                .then(onChanged)
+                .catch((e) => onError(message(e)))
+            }
+          >
+            Unlink
+          </button>
+        </div>
+      ))}
+      {detail.videoType === 'lesson' || detail.videoType === 'demo' ? (
+        <>
+          <input
+            role="combobox"
+            aria-label="Find lesson or demo"
+            aria-expanded={options.length > 0}
+            placeholder="Search videos to link"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive(
+                  (a) => (a + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length,
+                );
+              }
+              if (e.key === 'Enter' && options[active]) {
+                e.preventDefault();
+                link(options[active].id);
+              }
+            }}
+          />
+          <ul role="listbox">
+            {options.map((x, i) => (
+              <li key={x.id} role="option" aria-selected={i === active} onClick={() => link(x.id)}>
+                {x.displayTitle}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p>Set this video to Lesson or Demo, save, then add a link.</p>
+      )}
+    </fieldset>
+  );
+}
+
+function fromDetail(d: VideoDetails): Values {
   return {
     title: d.title ?? '',
     videoType: d.videoType ?? '',
-    styleId: d.style?.id ?? null,
     styleName: d.style?.name ?? '',
     instructors: d.instructors.map((x) => x.name).join(', '),
     level: d.level ?? '',
@@ -272,85 +586,50 @@ function fromDetail(d: VideoDetails): Record<string, unknown> {
     notes: d.notes ?? '',
   };
 }
-
-function LinkPicker({
-  api,
-  detail,
-  onChanged,
-}: {
-  api: DanceLibraryApi;
-  detail: VideoDetails;
-  onChanged: () => void;
-}) {
-  const [q, setQ] = useState('');
-  const [options, setOptions] = useState<
-    { id: string; displayTitle: string; videoType: string | null }[]
-  >([]);
-  useEffect(() => {
-    if (!q) {
-      setOptions([]);
-      return;
-    }
-    void api
-      .listVideos({ text: q, limit: 12 })
-      .then((result) =>
-        setOptions(
-          result.items.filter(
-            (video) =>
-              video.id !== detail.id &&
-              ((detail.videoType === 'lesson' && video.videoType === 'demo') ||
-                (detail.videoType === 'demo' && video.videoType === 'lesson')),
-          ),
-        ),
-      );
-  }, [api, q, detail]);
-  return (
-    <fieldset>
-      <legend>Lesson/demo links</legend>
-      {detail.lessonDemos.map((x) => (
-        <div key={x.id} className="linked-item">
-          {x.title}
-          <button
-            onClick={() => {
-              const lesson = detail.videoType === 'lesson' ? detail.id : x.id;
-              const demo = detail.videoType === 'demo' ? detail.id : x.id;
-              void api.unlinkLessonDemo(lesson, demo).then(onChanged);
-            }}
-          >
-            Unlink
-          </button>
-        </div>
-      ))}
-      {detail.videoType === 'lesson' || detail.videoType === 'demo' ? (
-        <>
-          <input
-            aria-label="Find lesson or demo"
-            placeholder="Search videos to link"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <ul role="listbox">
-            {options.map((x) => (
-              <li key={x.id} role="option" aria-selected="false">
-                <button
-                  onClick={() => {
-                    const lesson = detail.videoType === 'lesson' ? detail.id : x.id;
-                    const demo = detail.videoType === 'demo' ? detail.id : x.id;
-                    void api.linkLessonDemo(lesson, demo).then(() => {
-                      setQ('');
-                      onChanged();
-                    });
-                  }}
-                >
-                  {x.displayTitle}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : (
-        <p>Set this video to Lesson or Demo, save, then add a link.</p>
-      )}
-    </fieldset>
-  );
+function commonValues(ds: VideoDetails[]): Values {
+  const fields = [
+      'title',
+      'videoType',
+      'level',
+      'eventName',
+      'eventDate',
+      'rating',
+      'favorite',
+      'notes',
+    ] as const,
+    out: Values = {};
+  for (const f of fields) {
+    const vals = ds.map((d) => d[f]);
+    if (vals.every((v) => v === vals[0])) out[f] = vals[0] ?? '';
+  }
+  const styles = ds.map((d) => d.style?.name ?? '');
+  if (styles.every((v) => v === styles[0])) out.styleName = styles[0];
+  return out;
+}
+function intersection(groups: CatalogValue[][]): CatalogValue[] {
+  return groups[0]?.filter((x) => groups.every((g) => g.some((y) => y.id === x.id))) ?? [];
+}
+function append(value: unknown, name: string) {
+  return [String(value ?? '').trim(), name].filter(Boolean).join(', ');
+}
+function message(e: unknown) {
+  return e instanceof Error ? e.message : String(e);
+}
+function trapTab(e: React.KeyboardEvent, root: HTMLElement | null) {
+  if (!root) return;
+  const items = [
+    ...root.querySelectorAll<HTMLElement>(
+      'button,input,select,textarea,[tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((x) => !x.hasAttribute('disabled'));
+  if (!items.length) return;
+  const first = items[0]!,
+    last = items.at(-1)!;
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
 }

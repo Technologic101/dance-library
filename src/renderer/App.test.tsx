@@ -250,17 +250,70 @@ describe('App', () => {
     api({ updateVideo });
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select lesson-basic.mp4' }));
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'e' });
     const title = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(title, { target: { value: 'My lesson' } });
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(updateVideo).toHaveBeenCalledWith('vid-1', { title: 'My lesson' }));
+  });
+
+  it('bulk editing starts mixed and sends only explicit add operations', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({
+      bulkUpdateVideos,
+      getVideoDetails: async (id) => ({
+        id,
+        displayTitle: id,
+        title: null,
+        videoType: null,
+        style: null,
+        instructors: id === 'vid-1' ? [{ id: 'alice', name: 'Alice' }] : [],
+        level: null,
+        eventName: null,
+        eventDate: null,
+        tags:
+          id === 'vid-1'
+            ? [{ id: 'musicality', name: 'Musicality' }]
+            : [{ id: 'body', name: 'Body wave' }],
+        rating: null,
+        favorite: false,
+        notes: null,
+        lessonDemos: [],
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const addTags = await screen.findByRole('combobox', { name: 'Add tags' });
+    fireEvent.change(addTags, { target: { value: 'Viradinha' } });
+    fireEvent.keyDown(addTags.closest('aside')!, { key: 's', ctrlKey: true });
     await waitFor(() =>
-      expect(updateVideo).toHaveBeenCalledWith(
-        'vid-1',
-        expect.objectContaining({ title: 'My lesson', eventDate: null }),
-      ),
+      expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
+        addTagIds: ['viradinha'],
+      }),
     );
+  });
+
+  it('searches and applies tag autocomplete with the keyboard', async () => {
+    const searchCatalogValues = vi.fn(async (_kind, query) =>
+      query === 'mus' ? [{ id: 'music', name: 'Musicality' }] : [],
+    );
+    api({ searchCatalogValues });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const tags = await screen.findByRole('combobox', { name: 'Tags (comma separated)' });
+    fireEvent.change(tags, { target: { value: 'mus' } });
+    expect(await screen.findByRole('option', { name: 'Musicality' })).toBeTruthy();
+    fireEvent.keyDown(tags, { key: 'Enter' });
+    expect((tags as HTMLInputElement).value).toBe('Musicality');
   });
 
   it('applies a library refresh even when a newer search replaces the page', async () => {

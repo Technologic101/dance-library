@@ -252,11 +252,38 @@ h2 {
   box-shadow: -10px 0 30px rgb(0 0 0 / 35%);
 }
 .detail-panel label {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
   margin: 0.65rem 0;
   color: #d9cfc6;
+}
+
+.combo-options {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  max-height: 12rem;
+  overflow: auto;
+  background: var(--panel, white);
+  border: 1px solid #888;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.combo-options [role='option'] {
+  padding: 0.35rem 0.5rem;
+}
+
+.combo-options [aria-selected='true'] {
+  background: #dce8ff;
+}
+
+.common-values button {
+  margin: 0.2rem;
 }
 .detail-panel input,
 .detail-panel select,
