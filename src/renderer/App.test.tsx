@@ -300,6 +300,38 @@ describe('App', () => {
     );
   });
 
+  it('tabs through the whole bulk form without accepting autocomplete suggestions', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({
+      bulkUpdateVideos,
+      searchCatalogValues: async () => [{ id: 'afro', name: 'Afro' }],
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const addTags = await screen.findByRole('combobox', { name: 'Add tags' });
+    fireEvent.change(addTags, { target: { value: 'Viradinha' } });
+    expect(await screen.findByRole('option', { name: 'Afro' })).toBeTruthy();
+
+    const panel = addTags.closest('aside')!;
+    for (const field of panel.querySelectorAll<HTMLElement>('input, select, textarea')) {
+      field.focus();
+      fireEvent.keyDown(field, { key: 'Tab' });
+    }
+    expect((addTags as HTMLInputElement).value).toBe('Viradinha');
+    fireEvent.keyDown(panel, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
+        addTagIds: ['viradinha'],
+      }),
+    );
+  });
+
   it('searches and applies tag autocomplete with the keyboard', async () => {
     const searchCatalogValues = vi.fn(async (_kind, query) =>
       query === 'mus' ? [{ id: 'music', name: 'Musicality' }] : [],
@@ -314,6 +346,22 @@ describe('App', () => {
     expect(await screen.findByRole('option', { name: 'Musicality' })).toBeTruthy();
     fireEvent.keyDown(tags, { key: 'Enter' });
     expect((tags as HTMLInputElement).value).toBe('Musicality');
+  });
+
+  it('keeps the edited video selected after save so ArrowDown selects the next video', async () => {
+    api();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const title = await screen.findByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, { target: { value: 'Edited' } });
+    fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    expect(screen.getByRole('option', { name: /gone\.mp4/ }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
   });
 
   it('applies a library refresh even when a newer search replaces the page', async () => {

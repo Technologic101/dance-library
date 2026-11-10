@@ -95,9 +95,15 @@ describe('catalog editing', () => {
   it('unlinks an unordered pair and blocks retyping while linked', () => {
     const e = createCatalogEditor(db);
     e.linkLessonDemo('lesson', 'demo');
+    expect(() => e.updateVideo('lesson', { videoType: 'lesson' })).not.toThrow();
     expect(() => e.updateVideo('lesson', { videoType: 'social dance' })).toThrow(/Unlink/);
     e.unlinkLessonDemo('demo', 'lesson');
     expect(e.getVideoDetails('lesson').lessonDemos).toEqual([]);
+  });
+  it('rejects links to excluded videos', () => {
+    const e = createCatalogEditor(db);
+    db.prepare(`UPDATE videos SET excluded_at=? WHERE id='demo'`).run(now);
+    expect(() => e.linkLessonDemo('lesson', 'demo')).toThrow(/Restore excluded/);
   });
   it('searches edited title, style, event, instructor, tag, and notes', () => {
     const e = createCatalogEditor(db),

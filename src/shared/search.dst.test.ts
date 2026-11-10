@@ -8,6 +8,7 @@ describe('local day bounds in Los Angeles', () => {
       process.execPath,
       [path.join(import.meta.dirname, 'dstBounds.check.mjs')],
       {
+        // POSIX TZ is available even in minimal Windows CI images and models LA's DST rules.
         env: { ...process.env, TZ: 'PST8PDT' },
         encoding: 'utf8',
       },

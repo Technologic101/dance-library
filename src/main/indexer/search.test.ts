@@ -681,5 +681,11 @@ describe('catalog search', () => {
     expect(
       db.prepare(`SELECT captured_at AS capturedAt FROM videos WHERE id = 'vid'`).get(),
     ).toMatchObject({ capturedAt: expect.stringMatching(/Z$/) });
+    db.prepare(`UPDATE videos SET event_name='Legacy Congress' WHERE id='vid'`).run();
+    expect(
+      createRepository(db)
+        .listVideoSummaries({ text: 'Legacy Congress' })
+        .map((item) => item.id),
+    ).toEqual(['vid']);
   });
 });

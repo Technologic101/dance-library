@@ -139,7 +139,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         void api
           .getVideoDetails(id)
           .then((d) => api.updateVideo(id, { favorite: !d.favorite }))
-          .then(reload)
+          .then(() => reload([id]))
           .catch((caught: unknown) => setLoadError(messageOf(caught)));
       }
       if (
@@ -232,7 +232,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     void api.notifyViewReady();
   }, [api, busy, libraries, videos, health, healthError]);
 
-  async function reload(): Promise<void> {
+  async function reload(preserveIds: readonly string[] = []): Promise<void> {
     const seq = ++listSeq.current;
     const metadataSeq = ++metaSeq.current;
     const current = queryRef.current;
@@ -252,9 +252,13 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     setVideos(pageResult.items);
     setMatchTotal(pageResult.total);
     setLoadError(null);
-    setSelected(new Set());
-    selectionAnchor.current = -1;
-    selectionExtent.current = -1;
+    const kept = preserveIds.filter((id) => pageResult.items.some((item) => item.id === id));
+    setSelected(new Set(kept));
+    const keptIndex = kept.length
+      ? pageResult.items.findIndex((item) => item.id === kept.at(-1))
+      : -1;
+    selectionAnchor.current = keptIndex;
+    selectionExtent.current = keptIndex;
     const sentPage = Math.floor((current.offset ?? 0) / videoPageSize);
     const nextPage = pageAfterShrink(sentPage, pageResult.total, videoPageSize);
     if (pageResult.items.length === 0 && nextPage != null) setPage(nextPage);
@@ -565,7 +569,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
               listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus(),
             );
           }}
-          onSaved={reload}
+          onSaved={() => reload(editingIds)}
         />
       ) : null}
       <footer>

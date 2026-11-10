@@ -99,6 +99,7 @@ export function createCatalogEditor(db: Database.Database) {
     if (!entries.length) return;
     if (
       Object.prototype.hasOwnProperty.call(patch, 'videoType') &&
+      db.prepare('SELECT video_type FROM videos WHERE id=?').pluck().get(id) !== patch.videoType &&
       db
         .prepare(`SELECT 1 FROM video_links WHERE video_id=? OR other_video_id=? LIMIT 1`)
         .get(id, id)
@@ -232,11 +233,14 @@ export function createCatalogEditor(db: Database.Database) {
     linkLessonDemo(lessonId: string, demoId: string): void {
       if (lessonId === demoId) throw new Error('A video cannot link to itself.');
       const lesson = db
-        .prepare('SELECT video_type AS type FROM videos WHERE id=?')
-        .get(lessonId) as { type: string | null } | undefined;
-      const demo = db.prepare('SELECT video_type AS type FROM videos WHERE id=?').get(demoId) as
-        { type: string | null } | undefined;
+        .prepare('SELECT video_type AS type, excluded_at AS excludedAt FROM videos WHERE id=?')
+        .get(lessonId) as { type: string | null; excludedAt: string | null } | undefined;
+      const demo = db
+        .prepare('SELECT video_type AS type, excluded_at AS excludedAt FROM videos WHERE id=?')
+        .get(demoId) as { type: string | null; excludedAt: string | null } | undefined;
       if (!lesson || !demo) throw new Error('Video not found.');
+      if (lesson.excludedAt || demo.excludedAt)
+        throw new Error('Restore excluded videos before linking them.');
       if (lesson.type !== 'lesson' || demo.type !== 'demo')
         throw new Error('Links must point from a lesson to a demo.');
       try {

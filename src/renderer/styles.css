@@ -251,7 +251,8 @@ h2 {
   border-left: 1px solid #5a4d45;
   box-shadow: -10px 0 30px rgb(0 0 0 / 35%);
 }
-.detail-panel label {
+.detail-panel label,
+.combo-field {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -267,8 +268,9 @@ h2 {
   right: 0;
   max-height: 12rem;
   overflow: auto;
-  background: var(--panel, white);
-  border: 1px solid #888;
+  background: #2a2420;
+  color: #f4efe9;
+  border: 1px solid #75665c;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -279,7 +281,12 @@ h2 {
 }
 
 .combo-options [aria-selected='true'] {
-  background: #dce8ff;
+  background: #55483f;
+  color: #fff;
+}
+
+.link-options {
+  position: relative;
 }
 
 .common-values button {
