@@ -162,6 +162,7 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
       lessonDemos: [],
     }),
     bulkUpdateVideos: async (ids) => ({ changed: ids.length, requested: ids.length }),
+    undoLastEdit: async () => null,
     searchCatalogValues: async () => [],
     createCatalogValue: async (_kind, name) => ({ id: name.toLowerCase(), name }),
     linkLessonDemo: async () => {},
@@ -288,6 +289,61 @@ describe('App', () => {
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
     await waitFor(() => expect(updateVideo).toHaveBeenCalledWith('vid-1', { title: 'My lesson' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('status').textContent).toContain('Saved 1 video');
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+  });
+
+  it('undoes from the save status, refreshes, and announces the result', async () => {
+    const undoLastEdit = vi.fn(async () => ({ restored: 1, skipped: 0 }));
+    const listVideos = vi.fn(async () => ({ items: [present, missing], total: 2 }));
+    api({ undoLastEdit, listVideos });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const title = await screen.findByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, { target: { value: 'Edited' } });
+    fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
+    const undo = await screen.findByRole('button', { name: 'Undo' });
+    const callsBeforeUndo = listVideos.mock.calls.length;
+    fireEvent.click(undo);
+    await waitFor(() => expect(undoLastEdit).toHaveBeenCalledOnce());
+    expect((await screen.findByRole('status')).textContent).toContain('Undid edit to 1 video');
+    expect(listVideos.mock.calls.length).toBeGreaterThan(callsBeforeUndo);
+  });
+
+  it.each([
+    ['Control', { ctrlKey: true }],
+    ['Command', { metaKey: true }],
+  ])('keeps native %s+Z while typing in an input', async (_name, modifier) => {
+    const undoLastEdit = vi.fn(async () => ({ restored: 1, skipped: 0 }));
+    api({ undoLastEdit });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    const search = screen.getByRole('searchbox', { name: 'Search' });
+    search.focus();
+    fireEvent.keyDown(search, { key: 'z', ...modifier });
+    expect(undoLastEdit).not.toHaveBeenCalled();
+  });
+
+  it('disables and ignores global undo while the editor has unsaved changes', async () => {
+    const undoLastEdit = vi.fn(async () => ({ restored: 1, skipped: 0 }));
+    api({ undoLastEdit });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    let title = await screen.findByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, { target: { value: 'First edit' } });
+    fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
+    await screen.findByRole('button', { name: 'Undo' });
+    fireEvent.keyDown(window, { key: 'e' });
+    title = await screen.findByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, { target: { value: 'Unsaved second edit' } });
+    expect(screen.getByRole('button', { name: 'Undo' }).hasAttribute('disabled')).toBe(true);
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    expect(undoLastEdit).not.toHaveBeenCalled();
+    expect((title as HTMLInputElement).value).toBe('Unsaved second edit');
   });
 
   it('clears a single video date as null', async () => {
@@ -470,20 +526,26 @@ describe('App', () => {
     expect((tags as HTMLInputElement).value).toBe('Zouk');
   });
 
-  it('lets Escape close the editor when a combo only has stale suggestions', async () => {
+  it('lets Escape close the editor when a prop change leaves only stale suggestions', async () => {
     api({
       searchCatalogValues: async (_kind, query) =>
         query === 'Zo' ? [{ id: 'zouk', name: 'Zouk' }] : [],
+      getVideoDetails: async (id) => ({
+        ...apiDetails(id),
+        style: { id: 'zouk', name: 'Zouk' },
+      }),
     });
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
     fireEvent.keyDown(window, { key: 'e' });
     const editor = await screen.findByRole('dialog');
     const style = within(editor).getByRole('combobox', { name: 'Style' });
     fireEvent.change(style, { target: { value: 'Zo' } });
     expect(await screen.findByRole('option', { name: 'Zouk' })).toBeTruthy();
-    fireEvent.change(style, { target: { value: 'Zou' } });
+    fireEvent.click(within(editor).getByRole('button', { name: 'Leave style unchanged' }));
+    expect((style as HTMLInputElement).value).toBe('Zouk');
     expect(screen.queryByRole('option', { name: 'Zouk' })).toBeNull();
     fireEvent.keyDown(style, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -693,6 +755,103 @@ describe('App', () => {
         eventDate: null,
       }),
     );
+  });
+
+  it('does not save Title, Event, or Notes when bulk typing empties them', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({
+      bulkUpdateVideos,
+      getVideoDetails: async (id) => ({
+        ...apiDetails(id),
+        title: 'Shared title',
+        eventName: 'Shared event',
+        notes: 'Shared notes',
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
+    for (const name of ['Title', 'Event', 'Notes']) {
+      const field = within(editor).getByRole('textbox', { name });
+      fireEvent.change(field, { target: { value: '' } });
+      expect(field.getAttribute('placeholder')).toBe('— Mixed / unchanged —');
+    }
+    const addTags = within(editor).getByRole('combobox', { name: 'Add tags' });
+    fireEvent.change(addTags, { target: { value: 'Practice' } });
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
+        addTagIds: ['practice'],
+      }),
+    );
+  });
+
+  it('explicitly clears bulk Title, Event, and Notes with accessible hints', async () => {
+    const bulkUpdateVideos = vi.fn(async (ids: string[]) => ({
+      changed: ids.length,
+      requested: ids.length,
+    }));
+    api({ bulkUpdateVideos });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
+    for (const field of ['title', 'event', 'notes']) {
+      fireEvent.click(within(editor).getByRole('button', { name: `Clear ${field} on all` }));
+      const input = within(editor).getByRole('textbox', {
+        name: field === 'event' ? 'Event' : field[0]!.toUpperCase() + field.slice(1),
+      });
+      const describedBy = input.getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toBe(
+        'Will be cleared on 2 videos',
+      );
+    }
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
+        title: null,
+        eventName: null,
+        notes: null,
+      }),
+    );
+  });
+
+  it('leaves mixed bulk Title, Event, and Notes unchanged and restores the mixed cue', async () => {
+    api({
+      getVideoDetails: async (id) => ({
+        ...apiDetails(id),
+        title: id === 'vid-1' ? 'First title' : 'Second title',
+        eventName: id === 'vid-1' ? 'First event' : 'Second event',
+        notes: id === 'vid-1' ? 'First notes' : 'Second notes',
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
+    for (const field of ['title', 'event', 'notes']) {
+      const label = field === 'event' ? 'Event' : field[0]!.toUpperCase() + field.slice(1);
+      const input = within(editor).getByRole('textbox', { name: label });
+      const leave = within(editor).getByRole('button', { name: `Leave ${field} unchanged` });
+      expect(leave.hasAttribute('disabled')).toBe(true);
+      fireEvent.change(input, { target: { value: 'Temporary' } });
+      expect(leave.hasAttribute('disabled')).toBe(false);
+      fireEvent.click(leave);
+      expect((input as HTMLInputElement).value).toBe('');
+      expect(input.getAttribute('placeholder')).toBe('— Mixed / unchanged —');
+      expect(leave.hasAttribute('disabled')).toBe(true);
+    }
   });
 
   it('keeps the edited video selected after save so ArrowDown selects the next video', async () => {

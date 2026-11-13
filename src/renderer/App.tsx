@@ -65,6 +65,9 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<ViewMode>('grid');
   const [editingIds, setEditingIds] = useState<string[] | null>(null);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [editNotice, setEditNotice] = useState<{ message: string; canUndo: boolean } | null>(null);
+  const [editorVersion, setEditorVersion] = useState(0);
   const selectionAnchor = useRef<number>(-1);
   const selectionExtent = useRef<number>(-1);
   const listRef = useRef<HTMLUListElement>(null);
@@ -117,6 +120,18 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   useEffect(() => {
     function key(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        if (
+          editorDirty ||
+          (target instanceof Element &&
+            (target.matches('input, textarea, select, [contenteditable=true]') ||
+              target.closest('[role="combobox"][aria-expanded="true"]')))
+        )
+          return;
+        event.preventDefault();
+        void undoEdit();
+        return;
+      }
       if (editingIds || (target instanceof Element && target.closest('.detail-panel'))) return;
       if (
         target instanceof Element &&
@@ -171,7 +186,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     return () => window.removeEventListener('keydown', key);
     // reload intentionally reads the latest query and is recreated during render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, editingIds, selected, videos]);
+  }, [api, editingIds, editorDirty, selected, videos]);
 
   const queryRef = useRef(query);
   queryRef.current = query;
@@ -357,6 +372,30 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     });
   }
 
+  async function undoEdit(): Promise<void> {
+    if (editorDirty || busy) return;
+    setBusy(true);
+    setLoadError(null);
+    try {
+      const result = await api.undoLastEdit();
+      if (!result) {
+        setEditNotice({ message: 'Nothing to undo', canUndo: false });
+        return;
+      }
+      await reload(editingIds ?? []);
+      if (editingIds) setEditorVersion((value) => value + 1);
+      const suffix = result.skipped ? ` · ${result.skipped} unavailable` : '';
+      setEditNotice({
+        message: `Undid edit to ${result.restored} ${result.restored === 1 ? 'video' : 'videos'}${suffix}`,
+        canUndo: false,
+      });
+    } catch (caught) {
+      setLoadError(messageOf(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -459,6 +498,23 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             </div>
           ) : null}
           {notice ? <p role="status">{notice}</p> : null}
+          {editNotice ? (
+            <div role="status" aria-live="polite" className="edit-notice">
+              <span>{editNotice.message}</span>
+              {editNotice.canUndo ? (
+                <>
+                  <span aria-hidden="true"> · </span>
+                  <button
+                    type="button"
+                    disabled={busy || editorDirty}
+                    onClick={() => void undoEdit()}
+                  >
+                    Undo
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           <FilterBar
             facets={facets}
             value={filters}
@@ -560,16 +616,24 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       </div>
       {editingIds ? (
         <DetailPanel
-          key={editingIds.join(',')}
+          key={`${editingIds.join(',')}:${editorVersion}`}
           api={api}
           ids={editingIds}
           onClose={() => {
+            setEditorDirty(false);
             setEditingIds(null);
             queueMicrotask(() =>
               listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus(),
             );
           }}
-          onSaved={() => reload(editingIds)}
+          onDirtyChange={setEditorDirty}
+          onSaved={async (count) => {
+            await reload(editingIds);
+            setEditNotice({
+              message: `Saved ${count} ${count === 1 ? 'video' : 'videos'}`,
+              canUndo: true,
+            });
+          }}
         />
       ) : null}
       <footer>

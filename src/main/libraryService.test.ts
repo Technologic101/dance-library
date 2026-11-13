@@ -80,6 +80,23 @@ describe('createLibraryService', () => {
     });
     expect(service.getVideoDetails('keep').tags.map((x) => x.name)).toEqual(['Merged tag']);
   });
+  it('undoes onto a redirect target and skips a removed item without losing other restores', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    for (const id of ['keep', 'drop', 'removed'])
+      db.prepare(`INSERT INTO videos(id,title,created_at,updated_at) VALUES(?, ?, 't','t')`).run(
+        id,
+        `${id} before`,
+      );
+    const repo = createRepository(db);
+    const service = createLibraryService(db, tempDir(), idleDeps());
+    await service.bulkUpdateVideos(['drop', 'removed'], { title: 'edited' });
+    repo.mergeVideos('keep', ['drop'], 'now');
+    db.prepare(`DELETE FROM videos WHERE id='removed'`).run();
+    expect(await service.undoLastEdit()).toEqual({ restored: 1, skipped: 1 });
+    expect(service.getVideoDetails('keep').title).toBe('drop before');
+    expect(await service.undoLastEdit()).toBeNull();
+  });
   it('rejects a missing folder, a duplicate, and a nested folder', async () => {
     const root = tempDir();
     const child = path.join(root, 'lessons');

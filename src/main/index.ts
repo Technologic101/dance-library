@@ -27,6 +27,7 @@ import { createLibraryService, type LibraryService } from './libraryService';
 import { catalogPath, openCatalog } from './db/catalog';
 import { handleThumbProtocol, registerThumbScheme } from './thumbsProtocol';
 import {
+  noArguments,
   parseVideoUpdate,
   searchText,
   shortText,
@@ -143,6 +144,10 @@ function registerIpc(service: LibraryService): void {
   ipcMain.handle(IpcChannels.bulkUpdateVideos, (_event, ids: unknown, patch: unknown) =>
     service.bulkUpdateVideos(videoIds(ids), parseVideoUpdate(patch, true)),
   );
+  ipcMain.handle(IpcChannels.undoLastEdit, (_event, ...args: unknown[]) => {
+    noArguments(args);
+    return service.undoLastEdit();
+  });
   ipcMain.handle(IpcChannels.searchCatalogValues, (_event, kind: unknown, query: unknown) =>
     service.searchCatalogValues(valueKind(kind), searchText(query)),
   );

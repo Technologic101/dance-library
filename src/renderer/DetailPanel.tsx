@@ -17,11 +17,13 @@ export function DetailPanel({
   ids,
   onClose,
   onSaved,
+  onDirtyChange,
 }: {
   api: DanceLibraryApi;
   ids: string[];
   onClose: () => void;
-  onSaved: () => Promise<void>;
+  onSaved: (count: number) => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const bulk = ids.length > 1;
   const [details, setDetails] = useState<VideoDetails[]>([]);
@@ -37,6 +39,9 @@ export function DetailPanel({
   const dateId = useId();
   const styleClearHintId = useId();
   const dateClearHintId = useId();
+  const titleClearHintId = useId();
+  const eventClearHintId = useId();
+  const notesClearHintId = useId();
   const panel = useRef<HTMLElement>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -65,13 +70,16 @@ export function DetailPanel({
       cancelled = true;
     };
   }, [api, bulk, ids]);
+  useEffect(() => {
+    onDirtyChange(dirty.size > 0);
+  }, [dirty, onDirtyChange]);
   const detail = details[0];
   function set(key: string, value: unknown) {
     setValues((v) => ({ ...v, [key]: value }));
     setDirty((d) => new Set(d).add(key));
   }
   function leaveUnchanged(key: string, input: HTMLElement | null) {
-    setValues((current) => ({ ...current, [key]: commonValues(details)[key] ?? '' }));
+    setValues((current) => ({ ...current, [key]: commonValues(details)[key] }));
     setDirty((current) => {
       const next = new Set(current);
       next.delete(key);
@@ -112,6 +120,7 @@ export function DetailPanel({
     try {
       setError(null);
       setSaving(true);
+      let savedCount = 1;
       if (bulk) {
         const patch: BulkVideoUpdate = {};
         for (const key of dirty) {
@@ -144,6 +153,7 @@ export function DetailPanel({
           patch.addTagIds = await valueIds('tag', String(values.addTags ?? ''), true);
         if (removeTagIds) patch.removeTagIds = removeTagIds;
         const result = await api.bulkUpdateVideos(ids, patch);
+        savedCount = result.changed;
         if (result.changed !== result.requested)
           throw new Error(
             `Updated ${result.changed} of ${result.requested} videos. The selection changed; please review it.`,
@@ -169,7 +179,7 @@ export function DetailPanel({
         if (Object.keys(patch).length) await api.updateVideo(ids[0]!, patch);
       }
       if (!mounted.current) return;
-      await onSaved();
+      await onSaved(savedCount);
       if (!mounted.current) return;
       onClose();
     } catch (e) {
@@ -256,16 +266,26 @@ export function DetailPanel({
           ref={first}
           value={String(values.title ?? '')}
           placeholder={bulk && !dirty.has('title') ? mixed : ''}
-          onChange={(e) => set('title', e.target.value || null)}
+          aria-describedby={
+            bulk && dirty.has('title') && values.title === null ? titleClearHintId : undefined
+          }
+          onChange={(e) =>
+            bulk && !e.target.value
+              ? leaveTypedEmpty('title')
+              : set('title', e.target.value || null)
+          }
         />
         {bulk ? (
-          <button
-            type="button"
-            disabled={!dirty.has('title')}
-            onClick={() => leaveUnchanged('title', first.current)}
-          >
-            Leave title unchanged
-          </button>
+          <BulkClearActions
+            field="title"
+            count={ids.length}
+            dirty={dirty}
+            value={values.title}
+            commonValue={commonValues(details).title}
+            hintId={titleClearHintId}
+            onLeave={() => leaveUnchanged('title', first.current)}
+            onClear={() => set('title', null)}
+          />
         ) : null}
       </div>
       {select('videoType', 'Type', videoTypes, 'Clear type')}
@@ -286,8 +306,7 @@ export function DetailPanel({
           <button
             type="button"
             disabled={
-              !dirty.has('styleName') &&
-              values.styleName === (commonValues(details).styleName ?? '')
+              !dirty.has('styleName') && values.styleName === commonValues(details).styleName
             }
             onClick={() => leaveUnchanged('styleName', styleInput.current)}
           >
@@ -340,16 +359,28 @@ export function DetailPanel({
           ref={eventInput}
           value={String(values.eventName ?? '')}
           placeholder={bulk && !dirty.has('eventName') ? mixed : ''}
-          onChange={(e) => set('eventName', e.target.value || null)}
+          aria-describedby={
+            bulk && dirty.has('eventName') && values.eventName === null
+              ? eventClearHintId
+              : undefined
+          }
+          onChange={(e) =>
+            bulk && !e.target.value
+              ? leaveTypedEmpty('eventName')
+              : set('eventName', e.target.value || null)
+          }
         />
         {bulk ? (
-          <button
-            type="button"
-            disabled={!dirty.has('eventName')}
-            onClick={() => leaveUnchanged('eventName', eventInput.current)}
-          >
-            Leave event unchanged
-          </button>
+          <BulkClearActions
+            field="event"
+            count={ids.length}
+            dirty={dirty}
+            value={values.eventName}
+            commonValue={commonValues(details).eventName}
+            hintId={eventClearHintId}
+            onLeave={() => leaveUnchanged('eventName', eventInput.current)}
+            onClear={() => set('eventName', null)}
+          />
         ) : null}
       </div>
       <div className="combo-field">
@@ -379,8 +410,7 @@ export function DetailPanel({
             <button
               type="button"
               disabled={
-                !dirty.has('eventDate') &&
-                values.eventDate === (commonValues(details).eventDate ?? '')
+                !dirty.has('eventDate') && values.eventDate === commonValues(details).eventDate
               }
               onClick={() => leaveUnchanged('eventDate', dateInput.current)}
             >
@@ -464,16 +494,26 @@ export function DetailPanel({
           ref={notesInput}
           value={String(values.notes ?? '')}
           placeholder={bulk && !dirty.has('notes') ? mixed : ''}
-          onChange={(e) => set('notes', e.target.value || null)}
+          aria-describedby={
+            bulk && dirty.has('notes') && values.notes === null ? notesClearHintId : undefined
+          }
+          onChange={(e) =>
+            bulk && !e.target.value
+              ? leaveTypedEmpty('notes')
+              : set('notes', e.target.value || null)
+          }
         />
         {bulk ? (
-          <button
-            type="button"
-            disabled={!dirty.has('notes')}
-            onClick={() => leaveUnchanged('notes', notesInput.current)}
-          >
-            Leave notes unchanged
-          </button>
+          <BulkClearActions
+            field="notes"
+            count={ids.length}
+            dirty={dirty}
+            value={values.notes}
+            commonValue={commonValues(details).notes}
+            hintId={notesClearHintId}
+            onLeave={() => leaveUnchanged('notes', notesInput.current)}
+            onClear={() => set('notes', null)}
+          />
         ) : null}
       </div>
       {!bulk ? (
@@ -496,6 +536,40 @@ export function DetailPanel({
         </button>
       </div>
     </aside>
+  );
+}
+
+function BulkClearActions({
+  field,
+  count,
+  dirty,
+  value,
+  commonValue,
+  hintId,
+  onLeave,
+  onClear,
+}: {
+  field: string;
+  count: number;
+  dirty: Set<string>;
+  value: unknown;
+  commonValue: unknown;
+  hintId: string;
+  onLeave: () => void;
+  onClear: () => void;
+}) {
+  const key = field === 'event' ? 'eventName' : field;
+  const armed = dirty.has(key) && value === null;
+  return (
+    <div className="field-actions">
+      <button type="button" disabled={!dirty.has(key) && value === commonValue} onClick={onLeave}>
+        Leave {field} unchanged
+      </button>
+      <button type="button" onClick={onClear}>
+        Clear {field} on all
+      </button>
+      {armed ? <small id={hintId}>Will be cleared on {count} videos</small> : null}
+    </div>
   );
 }
 

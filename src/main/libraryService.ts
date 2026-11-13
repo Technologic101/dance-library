@@ -82,6 +82,9 @@ export function createLibraryService(
         requested: resolved.length,
       });
     },
+    undoLastEdit() {
+      return Promise.resolve(editor.undoLastEdit((id) => repo.resolveVideoId(id)));
+    },
     searchCatalogValues(kind: CatalogValueKind, query: string) {
       return editor.searchValues(kind, query);
     },

@@ -14,6 +14,7 @@ export const IpcChannels = {
   getVideoDetails: 'video:details',
   updateVideo: 'video:update',
   bulkUpdateVideos: 'video:bulk-update',
+  undoLastEdit: 'video:undo-last-edit',
   searchCatalogValues: 'catalog-values:search',
   createCatalogValue: 'catalog-values:create',
   linkLessonDemo: 'video-links:lesson-demo:add',
@@ -197,6 +198,11 @@ export type VideoChangeResult = {
   requested: number;
 };
 
+export type EditUndoResult = {
+  restored: number;
+  skipped: number;
+};
+
 export type ScanProgress = {
   state: 'running' | 'done' | 'error';
   libraryId: string | null;
@@ -259,6 +265,8 @@ export type DanceLibraryApi = {
   getVideoDetails: (videoId: string) => Promise<VideoDetails>;
   updateVideo: (videoId: string, patch: VideoUpdate) => Promise<VideoDetails>;
   bulkUpdateVideos: (videoIds: string[], patch: BulkVideoUpdate) => Promise<VideoChangeResult>;
+  /** Undoes the most recent metadata save in this app session. */
+  undoLastEdit: () => Promise<EditUndoResult | null>;
   searchCatalogValues: (kind: CatalogValueKind, query: string) => Promise<CatalogValue[]>;
   createCatalogValue: (kind: CatalogValueKind, name: string) => Promise<CatalogValue>;
   linkLessonDemo: (lessonId: string, demoId: string) => Promise<void>;

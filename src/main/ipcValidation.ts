@@ -46,6 +46,9 @@ export function searchText(value: unknown): string {
   if (typeof value !== 'string' || value.length > 120) throw new Error('Invalid search text.');
   return value;
 }
+export function noArguments(values: readonly unknown[]): void {
+  if (values.length !== 0) throw new Error('This operation takes no arguments.');
+}
 export function parseVideoUpdate(value: unknown, bulk: true): BulkVideoUpdate;
 export function parseVideoUpdate(value: unknown, bulk?: false): VideoUpdate;
 export function parseVideoUpdate(value: unknown, bulk = false): VideoUpdate | BulkVideoUpdate {

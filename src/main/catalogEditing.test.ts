@@ -175,4 +175,151 @@ describe('catalog editing', () => {
     expect(e.getVideoDetails('lesson')).toMatchObject({ title: 'Edited', notes: 'Keep me' });
     expect(repo.listVideoSummaries({}).find((x) => x.id === 'lesson')?.locations).toHaveLength(2);
   });
+
+  it('undoes one edit exactly, including relations, nulls, and the search index', () => {
+    let e = createCatalogEditor(db);
+    const oldStyle = e.createValue('style', 'Old Zouk');
+    const newStyle = e.createValue('style', 'New Samba');
+    const oldTeacher = e.createValue('instructor', 'Old Alice');
+    const newTeacher = e.createValue('instructor', 'New Bob');
+    const oldTag = e.createValue('tag', 'Old Elasticity');
+    const newTag = e.createValue('tag', 'New Spins');
+    e.updateVideo('lesson', {
+      title: 'Old title',
+      styleId: oldStyle.id,
+      instructorIds: [oldTeacher.id],
+      tagIds: [oldTag.id],
+      eventDate: null,
+      rating: 2,
+      favorite: false,
+      notes: 'Old searchable notes',
+    });
+    e = createCatalogEditor(db);
+    e.updateVideo('lesson', {
+      title: 'New title',
+      styleId: newStyle.id,
+      instructorIds: [newTeacher.id],
+      tagIds: [newTag.id],
+      eventDate: '2025-08-19',
+      rating: 5,
+      favorite: true,
+      notes: 'New searchable notes',
+    });
+    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    expect(e.getVideoDetails('lesson')).toMatchObject({
+      title: 'Old title',
+      style: { name: 'Old Zouk' },
+      eventDate: null,
+      rating: 2,
+      favorite: false,
+      notes: 'Old searchable notes',
+    });
+    expect(e.getVideoDetails('lesson').instructors.map((x) => x.name)).toEqual(['Old Alice']);
+    expect(e.getVideoDetails('lesson').tags.map((x) => x.name)).toEqual(['Old Elasticity']);
+    const repo = createRepository(db);
+    expect(repo.listVideoSummaries({ text: 'Old searchable' }).map((x) => x.id)).toContain(
+      'lesson',
+    );
+    for (const term of ['New title', 'New Samba', 'New Bob', 'New Spins', 'New searchable'])
+      expect(
+        repo.listVideoSummaries({ text: term }).map((x) => x.id),
+        term,
+      ).not.toContain('lesson');
+  });
+
+  it('bulk undo restores each video own values and leaves untouched fields alone', () => {
+    let e = createCatalogEditor(db);
+    const a = e.createValue('tag', 'A');
+    const b = e.createValue('tag', 'B');
+    const alice = e.createValue('instructor', 'Alice');
+    const bob = e.createValue('instructor', 'Bob');
+    const zouk = e.createValue('style', 'Bulk Zouk');
+    const samba = e.createValue('style', 'Bulk Samba');
+    e.updateVideo('lesson', {
+      title: 'Lesson before',
+      styleId: zouk.id,
+      instructorIds: [alice.id],
+      tagIds: [a.id],
+      eventDate: null,
+      rating: 1,
+      favorite: false,
+      notes: 'Keep lesson',
+    });
+    e.updateVideo('demo', {
+      title: 'Demo before',
+      styleId: samba.id,
+      instructorIds: [bob.id],
+      tagIds: [b.id],
+      eventDate: '2024-05-01',
+      rating: 4,
+      favorite: true,
+      notes: 'Keep demo',
+    });
+    e = createCatalogEditor(db);
+    e.bulkUpdate(['lesson', 'demo'], {
+      title: 'Batch title',
+      styleId: zouk.id,
+      eventDate: '2026-02-14',
+      rating: 5,
+      favorite: true,
+      addTagIds: [b.id],
+      removeTagIds: [a.id],
+      addInstructorIds: [bob.id],
+      removeInstructorIds: [alice.id],
+    });
+    db.prepare(
+      `UPDATE videos SET notes='Changed later outside touched fields' WHERE id='lesson'`,
+    ).run();
+    expect(e.undoLastEdit()).toEqual({ restored: 2, skipped: 0 });
+    expect(e.getVideoDetails('lesson')).toMatchObject({
+      title: 'Lesson before',
+      style: { name: 'Bulk Zouk' },
+      eventDate: null,
+      rating: 1,
+      favorite: false,
+      notes: 'Changed later outside touched fields',
+    });
+    expect(e.getVideoDetails('demo')).toMatchObject({
+      title: 'Demo before',
+      style: { name: 'Bulk Samba' },
+      eventDate: '2024-05-01',
+      rating: 4,
+      favorite: true,
+      notes: 'Keep demo',
+    });
+    expect(e.getVideoDetails('lesson').instructors.map((x) => x.name)).toEqual(['Alice']);
+    expect(e.getVideoDetails('demo').instructors.map((x) => x.name)).toEqual(['Bob']);
+    expect(e.getVideoDetails('lesson').tags.map((x) => x.name)).toEqual(['A']);
+    expect(e.getVideoDetails('demo').tags.map((x) => x.name)).toEqual(['B']);
+  });
+
+  it('undoes strictly LIFO and keeps only the configured number of batches', () => {
+    const e = createCatalogEditor(db, 2);
+    e.updateVideo('lesson', { title: 'One' });
+    e.updateVideo('lesson', { title: 'Two' });
+    e.updateVideo('lesson', { title: 'Three' });
+    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    expect(e.getVideoDetails('lesson').title).toBe('Two');
+    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    expect(e.getVideoDetails('lesson').title).toBe('One');
+    expect(e.undoLastEdit()).toBeNull();
+  });
+
+  it('restores content metadata once for every location', () => {
+    const e = createCatalogEditor(db);
+    db.prepare(
+      `INSERT INTO video_locations(id,video_id,library_id,path,path_key,filename,created_at,updated_at)
+       VALUES('copy-undo','lesson','lib','/dance/copy-undo.mp4','/dance/copy-undo.mp4','copy-undo.mp4',?,?)`,
+    ).run(now, now);
+    e.updateVideo('lesson', { title: 'Across copies' });
+    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    const item = createRepository(db)
+      .listVideoSummaries({})
+      .find((x) => x.id === 'lesson');
+    expect(item?.title).toBeNull();
+    expect(item?.locations.map((location) => location.filename)).toEqual([
+      'copy-undo.mp4',
+      'lesson.mp4',
+    ]);
+  });
 });

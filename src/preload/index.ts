@@ -18,6 +18,7 @@ const api: DanceLibraryApi = {
   updateVideo: (videoId, patch) => ipcRenderer.invoke(IpcChannels.updateVideo, videoId, patch),
   bulkUpdateVideos: (videoIds, patch) =>
     ipcRenderer.invoke(IpcChannels.bulkUpdateVideos, videoIds, patch),
+  undoLastEdit: () => ipcRenderer.invoke(IpcChannels.undoLastEdit),
   searchCatalogValues: (kind, query) =>
     ipcRenderer.invoke(IpcChannels.searchCatalogValues, kind, query),
   createCatalogValue: (kind, name) =>

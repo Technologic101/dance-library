@@ -9,8 +9,28 @@ import type {
 } from '../shared/api';
 
 const tables = { style: 'styles', instructor: 'instructors', tag: 'tags' } as const;
+const scalarColumns = {
+  title: 'title',
+  videoType: 'video_type',
+  styleId: 'style_id',
+  level: 'level',
+  eventName: 'event_name',
+  eventDate: 'event_date',
+  rating: 'rating',
+  favorite: 'favorite',
+  notes: 'notes',
+} as const;
+type ScalarKey = keyof typeof scalarColumns;
+type UndoSnapshot = {
+  id: string;
+  scalars: Partial<Record<ScalarKey, unknown>>;
+  instructorIds?: string[];
+  tagIds?: string[];
+};
+type UndoBatch = { snapshots: UndoSnapshot[] };
 
-export function createCatalogEditor(db: Database.Database) {
+export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
+  const undoStack: UndoBatch[] = [];
   function details(id: string): VideoDetails {
     const row = db
       .prepare(
@@ -82,18 +102,7 @@ export function createCatalogEditor(db: Database.Database) {
   }
 
   function setScalars(id: string, patch: VideoUpdate | BulkVideoUpdate): void {
-    const columns: Record<string, string> = {
-      title: 'title',
-      videoType: 'video_type',
-      styleId: 'style_id',
-      level: 'level',
-      eventName: 'event_name',
-      eventDate: 'event_date',
-      rating: 'rating',
-      favorite: 'favorite',
-      notes: 'notes',
-    };
-    const entries = Object.entries(columns).filter(([key]) =>
+    const entries = Object.entries(scalarColumns).filter(([key]) =>
       Object.prototype.hasOwnProperty.call(patch, key),
     );
     if (!entries.length) return;
@@ -141,15 +150,56 @@ export function createCatalogEditor(db: Database.Database) {
   };
   const touch = db.prepare('UPDATE videos SET updated_at=? WHERE id=?');
 
+  function snapshot(id: string, patch: VideoUpdate | BulkVideoUpdate): UndoSnapshot {
+    const keys = (Object.keys(scalarColumns) as ScalarKey[]).filter((key) =>
+      Object.prototype.hasOwnProperty.call(patch, key),
+    );
+    const scalars: UndoSnapshot['scalars'] = {};
+    if (keys.length) {
+      const columns = keys.map((key) => `${scalarColumns[key]} AS ${key}`).join(', ');
+      const row = db.prepare(`SELECT ${columns} FROM videos WHERE id=?`).get(id) as Record<
+        ScalarKey,
+        unknown
+      >;
+      for (const key of keys) scalars[key] = key === 'favorite' ? Boolean(row[key]) : row[key];
+    }
+    const relationIds = (table: 'video_instructors' | 'video_tags', column: string) =>
+      (
+        db.prepare(`SELECT ${column} AS id FROM ${table} WHERE video_id=?`).all(id) as {
+          id: string;
+        }[]
+      ).map((row) => row.id);
+    const instructorsTouched =
+      'instructorIds' in patch || 'addInstructorIds' in patch || 'removeInstructorIds' in patch;
+    const tagsTouched = 'tagIds' in patch || 'addTagIds' in patch || 'removeTagIds' in patch;
+    return {
+      id,
+      scalars,
+      ...(instructorsTouched
+        ? { instructorIds: relationIds('video_instructors', 'instructor_id') }
+        : {}),
+      ...(tagsTouched ? { tagIds: relationIds('video_tags', 'tag_id') } : {}),
+    };
+  }
+
+  function remember(batch: UndoBatch): void {
+    if (!batch.snapshots.length) return;
+    undoStack.push(batch);
+    if (undoStack.length > undoLimit) undoStack.splice(0, undoStack.length - undoLimit);
+  }
+
   return {
     getVideoDetails: details,
     updateVideo(id: string, patch: VideoUpdate): VideoDetails {
+      let before: UndoSnapshot | undefined;
       db.transaction(() => {
+        before = snapshot(id, patch);
         setScalars(id, patch);
         if (patch.instructorIds)
           replaceRelations(id, 'video_instructors', 'instructor_id', patch.instructorIds);
         if (patch.tagIds) replaceRelations(id, 'video_tags', 'tag_id', patch.tagIds);
       })();
+      remember({ snapshots: [before!] });
       return details(id);
     },
     bulkUpdate(ids: readonly string[], patch: BulkVideoUpdate): number {
@@ -160,10 +210,12 @@ export function createCatalogEditor(db: Database.Database) {
         if (add?.some((id) => remove?.includes(id)))
           throw new Error('The same value cannot be both added and removed.');
       let changed = 0;
+      const snapshots: UndoSnapshot[] = [];
       db.transaction(() => {
         const relationKeys = Object.keys(relationStatements) as (keyof typeof relationStatements)[];
         for (const id of ids) {
           if (!exists.get(id)) continue;
+          snapshots.push(snapshot(id, patch));
           setScalars(id, patch);
           changed++;
           let relationChanged = false;
@@ -192,7 +244,32 @@ export function createCatalogEditor(db: Database.Database) {
             touch.run(new Date().toISOString(), id);
         }
       })();
+      remember({ snapshots });
       return changed;
+    },
+    undoLastEdit(resolveId: (id: string) => string = (id) => id) {
+      const batch = undoStack.pop();
+      if (!batch) return null;
+      let restored = 0;
+      let skipped = 0;
+      const restoredTargets = new Set<string>();
+      db.transaction(() => {
+        for (const before of batch.snapshots) {
+          const id = resolveId(before.id);
+          if (!exists.get(id) || restoredTargets.has(id)) {
+            skipped++;
+            continue;
+          }
+          restoredTargets.add(id);
+          setScalars(id, before.scalars as VideoUpdate);
+          if (before.instructorIds)
+            replaceRelations(id, 'video_instructors', 'instructor_id', before.instructorIds);
+          if (before.tagIds) replaceRelations(id, 'video_tags', 'tag_id', before.tagIds);
+          if (!Object.keys(before.scalars).length) touch.run(new Date().toISOString(), id);
+          restored++;
+        }
+      })();
+      return { restored, skipped };
     },
     searchValues(kind: CatalogValueKind, query: string, limit = 100): CatalogValue[] {
       const table = tables[kind];
