@@ -29,7 +29,12 @@ type UndoSnapshot = {
 };
 type RelationDelta = { added: string[]; removed: string[] };
 type CreatedValue = { kind: CatalogValueKind; id: string };
-type UndoBatch = { token: string; snapshots: UndoSnapshot[]; createdValues: CreatedValue[] };
+type UndoBatch = {
+  token: string;
+  snapshots: UndoSnapshot[];
+  createdValues: CreatedValue[];
+  description: string;
+};
 
 export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
   const undoStack: UndoBatch[] = [];
@@ -213,7 +218,10 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
     snapshots: UndoSnapshot[],
     patch: VideoUpdate | BulkVideoUpdate,
   ): string | null {
-    if (!snapshots.length) return null;
+    if (!snapshots.length) {
+      pendingCreatedValues.clear();
+      return null;
+    }
     const referenced = new Set<string>();
     for (const [key, value] of Object.entries(patch)) {
       if (key === 'styleId' && typeof value === 'string') referenced.add(value);
@@ -223,7 +231,11 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
       referenced.has(value.id),
     );
     for (const value of createdValues) pendingCreatedValues.delete(value.id);
-    const batch = { token: randomUUID(), snapshots, createdValues };
+    const description =
+      snapshots.length === 1
+        ? `edit to ${details(snapshots[0]!.id).displayTitle}`
+        : `previous edit (${snapshots.length} videos)`;
+    const batch = { token: randomUUID(), snapshots, createdValues, description };
     undoStack.push(batch);
     if (undoStack.length > undoLimit) undoStack.splice(0, undoStack.length - undoLimit);
     return batch.token;
@@ -233,14 +245,19 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
     getVideoDetails: details,
     updateVideo(id: string, patch: VideoUpdate): VideoDetails & { undoToken: string | null } {
       let change: UndoSnapshot | null = null;
-      db.transaction(() => {
-        const before = snapshot(id, patch);
-        setScalars(id, patch);
-        if (patch.instructorIds)
-          replaceRelations(id, 'video_instructors', 'instructor_id', patch.instructorIds);
-        if (patch.tagIds) replaceRelations(id, 'video_tags', 'tag_id', patch.tagIds);
-        change = undoSnapshot(before, snapshot(id, patch));
-      })();
+      try {
+        db.transaction(() => {
+          const before = snapshot(id, patch);
+          setScalars(id, patch);
+          if (patch.instructorIds)
+            replaceRelations(id, 'video_instructors', 'instructor_id', patch.instructorIds);
+          if (patch.tagIds) replaceRelations(id, 'video_tags', 'tag_id', patch.tagIds);
+          change = undoSnapshot(before, snapshot(id, patch));
+        })();
+      } catch (error) {
+        pendingCreatedValues.clear();
+        throw error;
+      }
       const undoToken = remember(change ? [change] : [], patch);
       return { ...details(id), undoToken };
     },
@@ -256,41 +273,48 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
           throw new Error('The same value cannot be both added and removed.');
       let changed = 0;
       const snapshots: UndoSnapshot[] = [];
-      db.transaction(() => {
-        const relationKeys = Object.keys(relationStatements) as (keyof typeof relationStatements)[];
-        for (const id of ids) {
-          if (!exists.get(id)) continue;
-          const before = snapshot(id, patch);
-          setScalars(id, patch);
-          changed++;
-          let relationChanged = false;
-          for (const key of relationKeys)
-            for (const value of patch[key] ?? [])
-              relationChanged =
-                relationStatements[key].run(id, value).changes > 0 || relationChanged;
-          if (
-            relationChanged &&
-            !Object.keys(patch).some(
-              (key) =>
-                key in
-                {
-                  title: 1,
-                  videoType: 1,
-                  styleId: 1,
-                  level: 1,
-                  eventName: 1,
-                  eventDate: 1,
-                  rating: 1,
-                  favorite: 1,
-                  notes: 1,
-                },
+      try {
+        db.transaction(() => {
+          const relationKeys = Object.keys(
+            relationStatements,
+          ) as (keyof typeof relationStatements)[];
+          for (const id of ids) {
+            if (!exists.get(id)) continue;
+            const before = snapshot(id, patch);
+            setScalars(id, patch);
+            changed++;
+            let relationChanged = false;
+            for (const key of relationKeys)
+              for (const value of patch[key] ?? [])
+                relationChanged =
+                  relationStatements[key].run(id, value).changes > 0 || relationChanged;
+            if (
+              relationChanged &&
+              !Object.keys(patch).some(
+                (key) =>
+                  key in
+                  {
+                    title: 1,
+                    videoType: 1,
+                    styleId: 1,
+                    level: 1,
+                    eventName: 1,
+                    eventDate: 1,
+                    rating: 1,
+                    favorite: 1,
+                    notes: 1,
+                  },
+              )
             )
-          )
-            touch.run(new Date().toISOString(), id);
-          const change = undoSnapshot(before, snapshot(id, patch));
-          if (change) snapshots.push(change);
-        }
-      })();
+              touch.run(new Date().toISOString(), id);
+            const change = undoSnapshot(before, snapshot(id, patch));
+            if (change) snapshots.push(change);
+          }
+        })();
+      } catch (error) {
+        pendingCreatedValues.clear();
+        throw error;
+      }
       return { changed, undoToken: remember(snapshots, patch) };
     },
     undoLastEdit(resolveId: (id: string) => string = (id) => id, token?: string) {
@@ -336,6 +360,10 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
             column: 'instructor_id' | 'tag_id',
           ) => {
             if (!delta) return;
+            if (id !== before.id) {
+              conflicts++;
+              return;
+            }
             const remove = db.prepare(`DELETE FROM ${table} WHERE video_id=? AND ${column}=?`);
             const add = db.prepare(
               `INSERT OR IGNORE INTO ${table}(video_id,${column}) VALUES(?,?)`,
@@ -373,6 +401,7 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
         title,
         canUndo: undoStack.length > 0,
         undoToken: undoStack.at(-1)?.token,
+        undoDescription: undoStack.at(-1)?.description,
       };
     },
     protectedUndoIds(): ReadonlySet<string> {

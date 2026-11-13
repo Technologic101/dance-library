@@ -306,7 +306,9 @@ describe('App', () => {
       restored: 1,
       skipped: 0,
       conflicts: 0,
-      canUndo: false,
+      canUndo: true,
+      undoToken: 'older-save',
+      undoDescription: 'edit to B',
     }));
     const listVideos = vi.fn(async () => ({ items: [present, missing], total: 2 }));
     api({ undoLastEdit, listVideos });
@@ -323,6 +325,69 @@ describe('App', () => {
     await waitFor(() => expect(undoLastEdit).toHaveBeenCalledOnce());
     expect((await screen.findByRole('status')).textContent).toContain('Undid edit to 1 video');
     expect(listVideos.mock.calls.length).toBeGreaterThan(callsBeforeUndo);
+    expect(screen.getByRole('button', { name: 'Undo edit to B' })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('status')));
+  });
+
+  it('uses singular conflict wording', async () => {
+    api({
+      undoLastEdit: async () => ({
+        status: 'undone',
+        restored: 1,
+        skipped: 0,
+        conflicts: 1,
+        canUndo: false,
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('1 conflict'));
+    expect(screen.getByRole('status').textContent).not.toContain('1 conflicts');
+  });
+
+  it('coalesces rapid keyboard undo requests while one is pending', async () => {
+    let finish: (() => void) | undefined;
+    const undoLastEdit = vi.fn(
+      () =>
+        new Promise<null>((resolve) => {
+          finish = () => resolve(null);
+        }),
+    );
+    api({ undoLastEdit });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    expect(undoLastEdit).toHaveBeenCalledOnce();
+    finish?.();
+  });
+
+  it('offers Undo when a partial bulk save reports an error', async () => {
+    api({
+      bulkUpdateVideos: async () => ({
+        changed: 1,
+        requested: 2,
+        undoToken: 'partial-save',
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Edit (2)' }).hasAttribute('disabled')).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit (2)' }));
+    const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Title' }), {
+      target: { value: 'Partial' },
+    });
+    fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
+    expect((await within(editor).findByRole('alert')).textContent).toContain(
+      'Updated 1 of 2 videos',
+    );
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
   });
 
   it.each([
@@ -735,6 +800,13 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('listbox'))
+          .getAllByRole('option')
+          .every((item) => item.getAttribute('aria-selected') === 'true'),
+      ).toBe(true),
+    );
     fireEvent.keyDown(window, { key: 'e' });
     const removeTags = await screen.findByRole('combobox', { name: 'Remove tags' });
     fireEvent.change(screen.getByRole('combobox', { name: 'Add tags' }), {
@@ -810,26 +882,26 @@ describe('App', () => {
     const style = within(editor).getByRole('combobox', { name: 'Style' });
     fireEvent.change(style, { target: { value: '' } });
     expect((style as HTMLInputElement).value).toBe('');
-    expect(
-      within(editor)
-        .getByRole('button', { name: 'Leave style unchanged' })
-        .hasAttribute('disabled'),
-    ).toBe(true);
-    fireEvent.change(style, { target: { value: '' } });
-    fireEvent.change(style, { target: { value: 'Samba' } });
-    expect((style as HTMLInputElement).value).toBe('Samba');
+    const leaveStyle = within(editor).getByRole('button', { name: 'Leave style unchanged' });
+    expect(leaveStyle.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(leaveStyle);
+    expect((style as HTMLInputElement).value).toBe('Zouk');
 
     const date = within(editor).getByLabelText('Date');
     fireEvent.change(date, { target: { value: '' } });
     expect((date as HTMLInputElement).value).toBe('');
-    expect(
-      within(editor).getByRole('button', { name: 'Leave date unchanged' }).hasAttribute('disabled'),
-    ).toBe(true);
-    fireEvent.change(date, { target: { value: '' } });
+    expect(date.parentElement?.querySelector('small')?.textContent).toBe('— Mixed / unchanged —');
+    expect(date.getAttribute('aria-label')).toContain('mixed or unchanged');
+    const leaveDate = within(editor).getByRole('button', { name: 'Leave date unchanged' });
+    expect(leaveDate.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(leaveDate);
+    expect((date as HTMLInputElement).value).toBe('2024-05-01');
+    const addTags = within(editor).getByRole('combobox', { name: 'Add tags' });
+    fireEvent.change(addTags, { target: { value: 'Practice' } });
     fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
     await waitFor(() =>
       expect(bulkUpdateVideos).toHaveBeenCalledWith(['vid-1', 'vid-2'], {
-        styleId: 'samba',
+        addTagIds: ['practice'],
       }),
     );
   });
@@ -882,6 +954,11 @@ describe('App', () => {
       const field = within(editor).getByRole('textbox', { name });
       fireEvent.change(field, { target: { value: '' } });
       expect(field.getAttribute('placeholder')).toBe('— Mixed / unchanged —');
+      const label = name.toLowerCase();
+      const leave = within(editor).getByRole('button', { name: `Leave ${label} unchanged` });
+      expect(leave.hasAttribute('disabled')).toBe(false);
+      fireEvent.click(leave);
+      expect((field as HTMLInputElement).value).toBe(`Shared ${label}`);
     }
     const addTags = within(editor).getByRole('combobox', { name: 'Add tags' });
     fireEvent.change(addTags, { target: { value: 'Practice' } });

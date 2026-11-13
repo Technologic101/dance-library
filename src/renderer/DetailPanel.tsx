@@ -95,6 +95,9 @@ export function DetailPanel({
       return next;
     });
   }
+  function differsFromCommon(key: keyof Values): boolean {
+    return !Object.is(values[key], commonValues(details)[key]);
+  }
   async function valueIds(
     kind: CatalogValueKind,
     names: string,
@@ -156,10 +159,12 @@ export function DetailPanel({
         const result = await api.bulkUpdateVideos(ids, patch);
         savedCount = result.changed;
         undoToken = result.undoToken;
-        if (result.changed !== result.requested)
+        if (result.changed !== result.requested) {
+          if (undoToken) await onSaved(savedCount, undoToken);
           throw new Error(
             `Updated ${result.changed} of ${result.requested} videos. The selection changed; please review it.`,
           );
+        }
       } else {
         const patch: VideoUpdate = {};
         for (const key of dirty) {
@@ -286,6 +291,7 @@ export function DetailPanel({
             count={ids.length}
             dirty={dirty}
             value={values.title}
+            leaveEnabled={differsFromCommon('title')}
             hintId={titleClearHintId}
             onLeave={() => leaveUnchanged('title', first.current)}
             onClear={() => set('title', null)}
@@ -309,7 +315,7 @@ export function DetailPanel({
         <div className="field-actions">
           <button
             type="button"
-            disabled={!dirty.has('styleName')}
+            disabled={!differsFromCommon('styleName')}
             onClick={() => leaveUnchanged('styleName', styleInput.current)}
           >
             Leave style unchanged
@@ -322,11 +328,11 @@ export function DetailPanel({
           >
             Clear style on all
           </button>
-          {dirty.has('styleName') && values.styleName === null ? (
-            <small id={styleClearHintId} aria-live="polite">
-              Will be cleared on {ids.length} videos
-            </small>
-          ) : null}
+          <small id={styleClearHintId} aria-live="polite">
+            {dirty.has('styleName') && values.styleName === null
+              ? `Will be cleared on ${ids.length} videos`
+              : ''}
+          </small>
         </div>
       ) : null}
       {bulk ? (
@@ -385,6 +391,7 @@ export function DetailPanel({
             count={ids.length}
             dirty={dirty}
             value={values.eventName}
+            leaveEnabled={differsFromCommon('eventName')}
             hintId={eventClearHintId}
             onLeave={() => leaveUnchanged('eventName', eventInput.current)}
             onClear={() => set('eventName', null)}
@@ -398,7 +405,7 @@ export function DetailPanel({
           ref={dateInput}
           type="date"
           value={String(values.eventDate ?? '')}
-          aria-label={`Date${bulk && !dirty.has('eventDate') && values.eventDate === undefined ? ' (mixed or unchanged)' : ''}`}
+          aria-label={`Date${bulk && !dirty.has('eventDate') && differsFromCommon('eventDate') ? ' (mixed or unchanged)' : ''}`}
           aria-describedby={
             bulk && dirty.has('eventDate') && values.eventDate === null
               ? dateClearHintId
@@ -410,14 +417,14 @@ export function DetailPanel({
               : set('eventDate', e.target.value || null)
           }
         />
-        {bulk && !dirty.has('eventDate') && values.eventDate === undefined ? (
+        {bulk && !dirty.has('eventDate') && differsFromCommon('eventDate') ? (
           <small>{mixed}</small>
         ) : null}
         {bulk ? (
           <div className="field-actions">
             <button
               type="button"
-              disabled={!dirty.has('eventDate')}
+              disabled={!differsFromCommon('eventDate')}
               onClick={() => leaveUnchanged('eventDate', dateInput.current)}
             >
               Leave date unchanged
@@ -430,11 +437,11 @@ export function DetailPanel({
             >
               Clear date on all
             </button>
-            {dirty.has('eventDate') && values.eventDate === null ? (
-              <small id={dateClearHintId} aria-live="polite">
-                Will be cleared on {ids.length} videos
-              </small>
-            ) : null}
+            <small id={dateClearHintId} aria-live="polite">
+              {dirty.has('eventDate') && values.eventDate === null
+                ? `Will be cleared on ${ids.length} videos`
+                : ''}
+            </small>
           </div>
         ) : null}
       </div>
@@ -522,6 +529,7 @@ export function DetailPanel({
             count={ids.length}
             dirty={dirty}
             value={values.notes}
+            leaveEnabled={differsFromCommon('notes')}
             hintId={notesClearHintId}
             onLeave={() => leaveUnchanged('notes', notesInput.current)}
             onClear={() => set('notes', null)}
@@ -556,6 +564,7 @@ function BulkClearActions({
   count,
   dirty,
   value,
+  leaveEnabled,
   hintId,
   onLeave,
   onClear,
@@ -564,6 +573,7 @@ function BulkClearActions({
   count: number;
   dirty: Set<string>;
   value: unknown;
+  leaveEnabled: boolean;
   hintId: string;
   onLeave: () => void;
   onClear: () => void;
@@ -572,17 +582,15 @@ function BulkClearActions({
   const armed = dirty.has(key) && value === null;
   return (
     <div className="field-actions">
-      <button type="button" disabled={!dirty.has(key)} onClick={onLeave}>
+      <button type="button" disabled={!leaveEnabled} onClick={onLeave}>
         Leave {field} unchanged
       </button>
       <button type="button" aria-pressed={armed} aria-describedby={hintId} onClick={onClear}>
         Clear {field} on all
       </button>
-      {armed ? (
-        <small id={hintId} aria-live="polite">
-          Will be cleared on {count} videos
-        </small>
-      ) : null}
+      <small id={hintId} aria-live="polite">
+        {armed ? `Will be cleared on ${count} videos` : ''}
+      </small>
     </div>
   );
 }

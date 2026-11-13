@@ -70,6 +70,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     message: string;
     canUndo: boolean;
     token?: string;
+    undoDescription?: string;
   } | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [editorVersion, setEditorVersion] = useState(0);
@@ -78,7 +79,9 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const listRef = useRef<HTMLUListElement>(null);
   const editNoticeRef = useRef<HTMLDivElement>(null);
   const scanBusyRef = useRef(false);
+  const undoBusyRef = useRef(false);
   scanBusyRef.current = busy;
+  undoBusyRef.current = undoBusy;
   const notified = useRef(false);
   const listSeq = useRef(0);
   const metaSeq = useRef(0);
@@ -109,6 +112,10 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       return { filters: filtersNow, page: 0 };
     });
   }
+
+  useEffect(() => {
+    if (editNotice) editNoticeRef.current?.focus();
+  }, [editNotice]);
 
   useEffect(() => {
     let active = true;
@@ -396,7 +403,8 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   }
 
   async function undoEdit(token?: string): Promise<void> {
-    if (editorDirty || scanBusyRef.current || undoBusy) return;
+    if (editorDirty || scanBusyRef.current || undoBusyRef.current) return;
+    undoBusyRef.current = true;
     setUndoBusy(true);
     setLoadError(null);
     try {
@@ -414,7 +422,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       }
       await reload(editingIds ?? [...selected]);
       if (editingIds) setEditorVersion((value) => value + 1);
-      const suffix = `${result.skipped ? ` · ${result.skipped} unavailable` : ''}${result.conflicts ? ` · ${result.conflicts} conflicts` : ''}`;
+      const suffix = `${result.skipped ? ` · ${result.skipped} unavailable` : ''}${result.conflicts ? ` · ${result.conflicts} ${result.conflicts === 1 ? 'conflict' : 'conflicts'}` : ''}`;
       setEditNotice({
         message:
           result.restored === 1 && result.title
@@ -422,11 +430,12 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             : `Undid edit to ${result.restored} ${result.restored === 1 ? 'video' : 'videos'}${suffix}`,
         canUndo: result.canUndo,
         token: result.undoToken,
+        undoDescription: result.undoDescription,
       });
-      queueMicrotask(() => editNoticeRef.current?.focus());
     } catch (caught) {
       setLoadError(messageOf(caught));
     } finally {
+      undoBusyRef.current = false;
       setUndoBusy(false);
     }
   }
@@ -550,7 +559,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
                     disabled={busy || undoBusy || editorDirty}
                     onClick={() => void undoEdit(editNotice.token)}
                   >
-                    Undo
+                    {editNotice.undoDescription ? `Undo ${editNotice.undoDescription}` : 'Undo'}
                   </button>
                 </>
               ) : null}

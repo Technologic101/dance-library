@@ -116,12 +116,18 @@ describe('createLibraryService', () => {
     const service = createLibraryService(db, tempDir(), idleDeps());
     const original = service.createCatalogValue('tag', 'Original');
     const added = service.createCatalogValue('tag', 'Added');
-    db.prepare(`INSERT INTO video_tags(video_id,tag_id) VALUES('keep',?)`).run(original.id);
+    db.prepare(`INSERT INTO video_tags(video_id,tag_id) VALUES('keep',?),('keep',?)`).run(
+      original.id,
+      added.id,
+    );
     await service.bulkUpdateVideos(['drop'], { title: 'Edited', addTagIds: [added.id] });
     createRepository(db).mergeVideos('keep', ['drop'], 'now');
-    expect(await service.undoLastEdit()).toMatchObject({ status: 'undone', conflicts: 1 });
+    expect(await service.undoLastEdit()).toMatchObject({ status: 'undone', conflicts: 2 });
     expect(service.getVideoDetails('keep').title).toBe('Keep title');
-    expect(service.getVideoDetails('keep').tags.map((value) => value.name)).toEqual(['Original']);
+    expect(service.getVideoDetails('keep').tags.map((value) => value.name)).toEqual([
+      'Added',
+      'Original',
+    ]);
   });
   it('rejects a missing folder, a duplicate, and a nested folder', async () => {
     const root = tempDir();

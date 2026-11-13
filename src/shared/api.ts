@@ -207,6 +207,7 @@ export type EditUndoResult = {
   title?: string;
   canUndo: boolean;
   undoToken?: string;
+  undoDescription?: string;
 };
 export type StaleUndoResult = { status: 'stale' };
 

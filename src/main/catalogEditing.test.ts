@@ -375,6 +375,31 @@ describe('catalog editing', () => {
     expect(e.undoLastEdit(undefined, second.undoToken!)).toMatchObject({ status: 'undone' });
   });
 
+  it('describes the next undo target after an undo', () => {
+    const e = createCatalogEditor(db);
+    e.updateVideo('lesson', { title: 'B' });
+    e.updateVideo('demo', { title: 'A' });
+    expect(e.undoLastEdit()).toMatchObject({
+      undoDescription: 'edit to B',
+      canUndo: true,
+    });
+  });
+
+  it('does not attach created values from failed or no-op saves to a later undo', () => {
+    const e = createCatalogEditor(db);
+    const afterFailure = e.createValue('tag', 'After failure');
+    expect(() => e.updateVideo('missing', { tagIds: [afterFailure.id] })).toThrow();
+    e.updateVideo('lesson', { tagIds: [afterFailure.id] });
+    e.undoLastEdit();
+    expect(e.searchValues('tag', 'After failure')).toHaveLength(1);
+
+    const afterNoop = e.createValue('tag', 'After no-op');
+    expect(e.updateVideo('lesson', { title: null }).undoToken).toBeNull();
+    e.updateVideo('lesson', { tagIds: [afterNoop.id] });
+    e.undoLastEdit();
+    expect(e.searchValues('tag', 'After no-op')).toHaveLength(1);
+  });
+
   it('deletes values created by an undone save only when unreferenced', () => {
     const e = createCatalogEditor(db);
     const style = e.createValue('style', 'Ephemeral style');
