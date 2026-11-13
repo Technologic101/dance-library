@@ -12,7 +12,7 @@ import {
   type VideoType,
 } from '../../shared/api';
 import { videoListQuery } from './videoQuery';
-import { recordMergeInto } from '../mergeSequence';
+import { recordMergeInto, type MergedRelations } from '../mergeSequence';
 
 export type LibraryRecord = {
   id: string;
@@ -126,6 +126,8 @@ const VIDEO_SELECT = `
 `;
 
 export function createRepository(db: Database.Database) {
+  let transactionDepth = 0;
+  let pendingMergeRecords: { videoId: string; relations: MergedRelations }[] = [];
   const libraryById = db.prepare(`${LIBRARY_SELECT} WHERE id = ?`);
   const libraries = db.prepare(`${LIBRARY_SELECT} ORDER BY label COLLATE NOCASE, path`);
   const insertLibraryStmt = db.prepare(`
@@ -311,7 +313,23 @@ export function createRepository(db: Database.Database) {
     },
 
     transaction(work: () => void): void {
-      db.transaction(work)();
+      const outermost = transactionDepth === 0;
+      const mergeRecordCheckpoint = pendingMergeRecords.length;
+      transactionDepth++;
+      try {
+        db.transaction(work)();
+        transactionDepth--;
+        if (outermost) {
+          for (const record of pendingMergeRecords)
+            recordMergeInto(db, record.videoId, record.relations);
+          pendingMergeRecords = [];
+        }
+      } catch (error) {
+        transactionDepth--;
+        pendingMergeRecords.splice(mergeRecordCheckpoint);
+        if (outermost) pendingMergeRecords = [];
+        throw error;
+      }
     },
 
     getVideo(id: string): VideoRecord | null {
@@ -412,15 +430,17 @@ export function createRepository(db: Database.Database) {
      */
     mergeVideos(keepId: string, dropIds: readonly string[], now: string): void {
       let merged = false;
+      const mergedInstructorIds = new Set<string>();
+      const mergedTagIds = new Set<string>();
       const apply = db.transaction(() => {
         for (const dropId of [...new Set(dropIds)]) {
           if (dropId === keepId) continue;
-          const dropHash = db
+          const dropRow = db
             .prepare(
               `SELECT full_hash AS fullHash, full_hash_kind AS fullHashKind FROM videos WHERE id = ?`,
             )
             .get(dropId) as { fullHash: string | null; fullHashKind: string | null } | undefined;
-          if (dropHash) merged = true;
+          if (dropRow) merged = true;
           db.prepare(`UPDATE videos SET full_hash = NULL, full_hash_kind = NULL WHERE id = ?`).run(
             dropId,
           );
@@ -429,7 +449,7 @@ export function createRepository(db: Database.Database) {
                full_hash = COALESCE(full_hash, ?),
                full_hash_kind = COALESCE(full_hash_kind, ?)
              WHERE id = ?`,
-          ).run(dropHash?.fullHash ?? null, dropHash?.fullHashKind ?? null, keepId);
+          ).run(dropRow?.fullHash ?? null, dropRow?.fullHashKind ?? null, keepId);
           db.prepare(
             `UPDATE videos SET
                excluded_at = CASE
@@ -483,10 +503,20 @@ export function createRepository(db: Database.Database) {
             `INSERT OR IGNORE INTO video_instructors (video_id, instructor_id)
              SELECT ?, instructor_id FROM video_instructors WHERE video_id = ?`,
           ).run(keepId, dropId);
+          for (const id of db
+            .prepare(`SELECT instructor_id AS id FROM video_instructors WHERE video_id = ?`)
+            .pluck()
+            .all(dropId) as string[])
+            mergedInstructorIds.add(id);
           db.prepare(
             `INSERT OR IGNORE INTO video_tags (video_id, tag_id)
              SELECT ?, tag_id FROM video_tags WHERE video_id = ?`,
           ).run(keepId, dropId);
+          for (const id of db
+            .prepare(`SELECT tag_id AS id FROM video_tags WHERE video_id = ?`)
+            .pluck()
+            .all(dropId) as string[])
+            mergedTagIds.add(id);
           db.prepare(
             `INSERT OR IGNORE INTO video_links (id, video_id, other_video_id, kind, created_at)
              SELECT
@@ -509,7 +539,18 @@ export function createRepository(db: Database.Database) {
         }
       });
       apply();
-      if (merged) recordMergeInto(db, keepId);
+      if (merged) {
+        const record = {
+          videoId: keepId,
+          relations: {
+            instructorIds: [...mergedInstructorIds],
+            tagIds: [...mergedTagIds],
+          },
+        };
+        // The outer repository transaction publishes these only after commit and drops them on rollback.
+        if (transactionDepth > 0) pendingMergeRecords.push(record);
+        else recordMergeInto(db, record.videoId, record.relations);
+      }
     },
 
     listLibrarySummaries(): LibrarySummary[] {

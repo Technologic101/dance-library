@@ -1,6 +1,12 @@
 import type Database from 'better-sqlite3';
 
-type MergeState = { sequence: number; videos: Map<string, number> };
+export type MergedRelations = {
+  instructorIds: readonly string[];
+  tagIds: readonly string[];
+};
+
+type MergeEvent = MergedRelations & { sequence: number };
+type MergeState = { sequence: number; videos: Map<string, MergeEvent[]> };
 
 const mergeStates = new WeakMap<Database.Database, MergeState>();
 
@@ -14,11 +20,29 @@ function stateFor(db: Database.Database): MergeState {
 }
 
 export function currentMergeSequence(db: Database.Database, videoId: string): number {
-  return stateFor(db).videos.get(videoId) ?? 0;
+  return stateFor(db).videos.get(videoId)?.at(-1)?.sequence ?? 0;
 }
 
-export function recordMergeInto(db: Database.Database, videoId: string): void {
+export function recordMergeInto(
+  db: Database.Database,
+  videoId: string,
+  relations: MergedRelations,
+): void {
   const state = stateFor(db);
   state.sequence++;
-  state.videos.set(videoId, state.sequence);
+  const events = state.videos.get(videoId) ?? [];
+  events.push({ sequence: state.sequence, ...relations });
+  state.videos.set(videoId, events);
+}
+
+export function relationMergedSince(
+  db: Database.Database,
+  videoId: string,
+  sequence: number,
+  relation: keyof MergedRelations,
+  valueId: string,
+): boolean {
+  return (stateFor(db).videos.get(videoId) ?? []).some(
+    (event) => event.sequence > sequence && event[relation].includes(valueId),
+  );
 }

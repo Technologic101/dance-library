@@ -422,7 +422,9 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   }
 
   async function undoEdit(token?: string): Promise<void> {
-    if (editorDirty || scanBusyRef.current || undoBusyRef.current) return;
+    if (editorDirtyRef.current || scanBusyRef.current || undoBusyRef.current) return;
+    const currentEditingIds = editingIdsRef.current;
+    const currentSelected = selectedRef.current;
     undoBusyRef.current = true;
     setUndoBusy(true);
     setLoadError(null);
@@ -441,8 +443,8 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         });
         return;
       }
-      await reload(editingIds ?? [...selected]);
-      if (editingIds) setEditorVersion((value) => value + 1);
+      await reload(currentEditingIds ?? [...currentSelected]);
+      if (currentEditingIds) setEditorVersion((value) => value + 1);
       const suffix = `${result.skipped ? ` · ${result.skipped} unavailable` : ''}${result.conflicts ? ` · ${result.conflicts} ${result.conflicts === 1 ? 'conflict' : 'conflicts'}` : ''}`;
       focusEditNoticeRef.current = true;
       setEditNotice({

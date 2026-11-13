@@ -7,7 +7,7 @@ import type {
   VideoDetails,
   VideoUpdate,
 } from '../shared/api';
-import { currentMergeSequence } from './mergeSequence';
+import { currentMergeSequence, relationMergedSince } from './mergeSequence';
 
 const tables = { style: 'styles', instructor: 'instructors', tag: 'tags' } as const;
 const scalarColumns = {
@@ -368,16 +368,25 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
             column: 'instructor_id' | 'tag_id',
           ) => {
             if (!delta) return;
-            if (id !== before.id || currentMergeSequence(db, id) > before.mergeSequence) {
-              conflicts++;
-              return;
-            }
             const remove = db.prepare(`DELETE FROM ${table} WHERE video_id=? AND ${column}=?`);
             const add = db.prepare(
               `INSERT OR IGNORE INTO ${table}(video_id,${column}) VALUES(?,?)`,
             );
-            for (const value of delta.added) remove.run(id, value);
-            for (const value of delta.removed) add.run(id, value);
+            const relation = column === 'tag_id' ? ('tagIds' as const) : ('instructorIds' as const);
+            for (const value of delta.added) {
+              if (relationMergedSince(db, id, before.mergeSequence, relation, value)) conflicts++;
+              else remove.run(id, value);
+            }
+            for (const value of delta.removed) {
+              const present = Boolean(
+                db
+                  .prepare(`SELECT 1 FROM ${table} WHERE video_id=? AND ${column}=?`)
+                  .get(id, value),
+              );
+              if (present && relationMergedSince(db, id, before.mergeSequence, relation, value))
+                conflicts++;
+              else add.run(id, value);
+            }
           };
           inverse(before.instructorDelta, 'video_instructors', 'instructor_id');
           inverse(before.tagDelta, 'video_tags', 'tag_id');

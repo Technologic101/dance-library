@@ -361,6 +361,66 @@ describe('catalog editing', () => {
     ]);
   });
 
+  it('fully restores relations after merging a duplicate with no relations', () => {
+    const e = createCatalogEditor(db);
+    const oldTag = e.createValue('tag', 'Restore me');
+    const addedTag = e.createValue('tag', 'Remove me');
+    e.updateVideo('lesson', { tagIds: [oldTag.id] });
+    const editorAfterSetup = createCatalogEditor(db);
+    editorAfterSetup.updateVideo('lesson', { tagIds: [addedTag.id] });
+
+    createRepository(db).mergeVideos('lesson', ['demo'], '2024-01-02T00:00:00.000Z');
+
+    expect(editorAfterSetup.undoLastEdit()).toMatchObject({ restored: 1, conflicts: 0 });
+    expect(editorAfterSetup.getVideoDetails('lesson').tags.map((value) => value.name)).toEqual([
+      'Restore me',
+    ]);
+  });
+
+  it('does not track relation ids from a rolled-back merge', () => {
+    const e = createCatalogEditor(db);
+    const tag = e.createValue('tag', 'Rolled back');
+    e.updateVideo('lesson', { tagIds: [tag.id] });
+    db.prepare(`INSERT INTO video_tags(video_id,tag_id) VALUES('demo',?)`).run(tag.id);
+    const repo = createRepository(db);
+
+    expect(() =>
+      repo.transaction(() => {
+        repo.mergeVideos('lesson', ['demo'], '2024-01-02T00:00:00.000Z');
+        throw new Error('later indexing failed');
+      }),
+    ).toThrow('later indexing failed');
+    db.prepare(`DELETE FROM video_tags WHERE video_id='demo'`).run();
+    repo.mergeVideos('lesson', ['demo'], '2024-01-02T00:00:00.000Z');
+
+    expect(e.undoLastEdit()).toMatchObject({ restored: 1, conflicts: 0 });
+    expect(e.getVideoDetails('lesson').tags).toEqual([]);
+  });
+
+  it('undoes unaffected relation ids while preserving ids carried in by a later merge', () => {
+    const setup = createCatalogEditor(db);
+    const restoreConflict = setup.createValue('tag', 'Restore conflict');
+    const restoreNormally = setup.createValue('tag', 'Restore normally');
+    const keepConflict = setup.createValue('tag', 'Keep conflict');
+    const removeNormally = setup.createValue('tag', 'Remove normally');
+    setup.updateVideo('lesson', { tagIds: [restoreConflict.id, restoreNormally.id] });
+    const e = createCatalogEditor(db);
+    e.updateVideo('lesson', { tagIds: [keepConflict.id, removeNormally.id] });
+    db.prepare(`INSERT INTO video_tags(video_id,tag_id) VALUES('demo',?),('demo',?)`).run(
+      keepConflict.id,
+      restoreConflict.id,
+    );
+
+    createRepository(db).mergeVideos('lesson', ['demo'], '2024-01-02T00:00:00.000Z');
+
+    expect(e.undoLastEdit()).toMatchObject({ restored: 1, conflicts: 2 });
+    expect(e.getVideoDetails('lesson').tags.map((value) => value.name)).toEqual([
+      'Keep conflict',
+      'Restore conflict',
+      'Restore normally',
+    ]);
+  });
+
   it('restores the rest of a linked video and keeps the history entry until commit', () => {
     const e = createCatalogEditor(db);
     const tag = e.createValue('tag', 'Linked edit');
