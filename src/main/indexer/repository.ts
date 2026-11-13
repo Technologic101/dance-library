@@ -12,6 +12,7 @@ import {
   type VideoType,
 } from '../../shared/api';
 import { videoListQuery } from './videoQuery';
+import { recordMergeInto, type MergedRelations } from '../mergeSequence';
 
 export type LibraryRecord = {
   id: string;
@@ -125,6 +126,8 @@ const VIDEO_SELECT = `
 `;
 
 export function createRepository(db: Database.Database) {
+  let transactionDepth = 0;
+  let pendingMergeRecords: { videoId: string; relations: MergedRelations }[] = [];
   const libraryById = db.prepare(`${LIBRARY_SELECT} WHERE id = ?`);
   const libraries = db.prepare(`${LIBRARY_SELECT} ORDER BY label COLLATE NOCASE, path`);
   const insertLibraryStmt = db.prepare(`
@@ -310,7 +313,23 @@ export function createRepository(db: Database.Database) {
     },
 
     transaction(work: () => void): void {
-      db.transaction(work)();
+      const outermost = transactionDepth === 0;
+      const mergeRecordCheckpoint = pendingMergeRecords.length;
+      transactionDepth++;
+      try {
+        db.transaction(work)();
+        transactionDepth--;
+        if (outermost) {
+          for (const record of pendingMergeRecords)
+            recordMergeInto(db, record.videoId, record.relations);
+          pendingMergeRecords = [];
+        }
+      } catch (error) {
+        transactionDepth--;
+        pendingMergeRecords.splice(mergeRecordCheckpoint);
+        if (outermost) pendingMergeRecords = [];
+        throw error;
+      }
     },
 
     getVideo(id: string): VideoRecord | null {
@@ -374,7 +393,7 @@ export function createRepository(db: Database.Database) {
      * Drops content rows that have no locations and no user-entered fields.
      * Returns thumbnail file names so the caller can delete only those files.
      */
-    deleteEmptyOrphans(): string[] {
+    deleteEmptyOrphans(protectedIds: ReadonlySet<string> = new Set()): string[] {
       const rows = db
         .prepare(
           `SELECT id, thumbnail_file AS thumbnailFile FROM videos v
@@ -390,16 +409,17 @@ export function createRepository(db: Database.Database) {
              )`,
         )
         .all() as { id: string; thumbnailFile: string | null }[];
+      const deletable = rows.filter((row) => !protectedIds.has(row.id));
       const remove = db.prepare(`DELETE FROM videos WHERE id = ?`);
       const prune = db.prepare(
         `DELETE FROM video_redirects WHERE to_id NOT IN (SELECT id FROM videos)`,
       );
       const apply = db.transaction(() => {
-        for (const row of rows) remove.run(row.id);
+        for (const row of deletable) remove.run(row.id);
         prune.run();
       });
       apply();
-      return rows
+      return deletable
         .map((row) => row.thumbnailFile)
         .filter((file): file is string => file != null && file.length > 0);
     },
@@ -409,14 +429,18 @@ export function createRepository(db: Database.Database) {
      * Exclusion wins: a removed video stays removed after a duplicate is merged in.
      */
     mergeVideos(keepId: string, dropIds: readonly string[], now: string): void {
+      let merged = false;
+      const mergedInstructorIds = new Set<string>();
+      const mergedTagIds = new Set<string>();
       const apply = db.transaction(() => {
         for (const dropId of [...new Set(dropIds)]) {
           if (dropId === keepId) continue;
-          const dropHash = db
+          const dropRow = db
             .prepare(
               `SELECT full_hash AS fullHash, full_hash_kind AS fullHashKind FROM videos WHERE id = ?`,
             )
             .get(dropId) as { fullHash: string | null; fullHashKind: string | null } | undefined;
+          if (dropRow) merged = true;
           db.prepare(`UPDATE videos SET full_hash = NULL, full_hash_kind = NULL WHERE id = ?`).run(
             dropId,
           );
@@ -425,7 +449,7 @@ export function createRepository(db: Database.Database) {
                full_hash = COALESCE(full_hash, ?),
                full_hash_kind = COALESCE(full_hash_kind, ?)
              WHERE id = ?`,
-          ).run(dropHash?.fullHash ?? null, dropHash?.fullHashKind ?? null, keepId);
+          ).run(dropRow?.fullHash ?? null, dropRow?.fullHashKind ?? null, keepId);
           db.prepare(
             `UPDATE videos SET
                excluded_at = CASE
@@ -479,10 +503,20 @@ export function createRepository(db: Database.Database) {
             `INSERT OR IGNORE INTO video_instructors (video_id, instructor_id)
              SELECT ?, instructor_id FROM video_instructors WHERE video_id = ?`,
           ).run(keepId, dropId);
+          for (const id of db
+            .prepare(`SELECT instructor_id AS id FROM video_instructors WHERE video_id = ?`)
+            .pluck()
+            .all(dropId) as string[])
+            mergedInstructorIds.add(id);
           db.prepare(
             `INSERT OR IGNORE INTO video_tags (video_id, tag_id)
              SELECT ?, tag_id FROM video_tags WHERE video_id = ?`,
           ).run(keepId, dropId);
+          for (const id of db
+            .prepare(`SELECT tag_id AS id FROM video_tags WHERE video_id = ?`)
+            .pluck()
+            .all(dropId) as string[])
+            mergedTagIds.add(id);
           db.prepare(
             `INSERT OR IGNORE INTO video_links (id, video_id, other_video_id, kind, created_at)
              SELECT
@@ -505,6 +539,18 @@ export function createRepository(db: Database.Database) {
         }
       });
       apply();
+      if (merged) {
+        const record = {
+          videoId: keepId,
+          relations: {
+            instructorIds: [...mergedInstructorIds],
+            tagIds: [...mergedTagIds],
+          },
+        };
+        // The outer repository transaction publishes these only after commit and drops them on rollback.
+        if (transactionDepth > 0) pendingMergeRecords.push(record);
+        else recordMergeInto(db, record.videoId, record.relations);
+      }
     },
 
     listLibrarySummaries(): LibrarySummary[] {

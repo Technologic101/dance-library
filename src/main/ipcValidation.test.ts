@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parseVideoUpdate, shortText, valueKind, videoIds } from './ipcValidation';
+import {
+  noArguments,
+  optionalUndoToken,
+  parseVideoUpdate,
+  shortText,
+  valueKind,
+  videoIds,
+} from './ipcValidation';
 describe('catalog IPC validation', () => {
   it('accepts a strict valid update', () =>
     expect(
@@ -35,5 +42,15 @@ describe('catalog IPC validation', () => {
     expect(() => videoIds([])).toThrow();
     expect(() => videoIds(['a', 'a'])).toThrow();
     expect(() => videoIds(Array.from({ length: 501 }, (_, i) => `v${i}`))).toThrow();
+  });
+  it('strictly rejects arguments to no-argument IPC operations', () => {
+    expect(() => noArguments([])).not.toThrow();
+    expect(() => noArguments(['unexpected'])).toThrow(/no arguments/);
+  });
+  it('accepts only one strictly validated undo token', () => {
+    expect(optionalUndoToken([])).toBeUndefined();
+    expect(optionalUndoToken(['save-1'])).toBe('save-1');
+    expect(() => optionalUndoToken([1])).toThrow(/token/);
+    expect(() => optionalUndoToken(['save-1', 'save-2'])).toThrow(/at most one/);
   });
 });

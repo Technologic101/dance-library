@@ -14,6 +14,7 @@ export const IpcChannels = {
   getVideoDetails: 'video:details',
   updateVideo: 'video:update',
   bulkUpdateVideos: 'video:bulk-update',
+  undoLastEdit: 'video:undo-last-edit',
   searchCatalogValues: 'catalog-values:search',
   createCatalogValue: 'catalog-values:create',
   linkLessonDemo: 'video-links:lesson-demo:add',
@@ -195,7 +196,20 @@ export type CatalogFacets = {
 export type VideoChangeResult = {
   changed: number;
   requested: number;
+  undoToken?: string | null;
 };
+
+export type EditUndoResult = {
+  status: 'undone';
+  restored: number;
+  skipped: number;
+  conflicts: number;
+  title?: string;
+  canUndo: boolean;
+  undoToken?: string;
+  undoDescription?: string;
+};
+export type StaleUndoResult = { status: 'stale' };
 
 export type ScanProgress = {
   state: 'running' | 'done' | 'error';
@@ -257,8 +271,13 @@ export type DanceLibraryApi = {
   excludeVideos: (videoIds: string[]) => Promise<VideoChangeResult>;
   restoreVideos: (videoIds: string[]) => Promise<VideoChangeResult>;
   getVideoDetails: (videoId: string) => Promise<VideoDetails>;
-  updateVideo: (videoId: string, patch: VideoUpdate) => Promise<VideoDetails>;
+  updateVideo: (
+    videoId: string,
+    patch: VideoUpdate,
+  ) => Promise<VideoDetails & { undoToken?: string | null }>;
   bulkUpdateVideos: (videoIds: string[], patch: BulkVideoUpdate) => Promise<VideoChangeResult>;
+  /** Undoes the most recent metadata save in this app session. */
+  undoLastEdit: (token?: string) => Promise<EditUndoResult | StaleUndoResult | null>;
   searchCatalogValues: (kind: CatalogValueKind, query: string) => Promise<CatalogValue[]>;
   createCatalogValue: (kind: CatalogValueKind, name: string) => Promise<CatalogValue>;
   linkLessonDemo: (lessonId: string, demoId: string) => Promise<void>;

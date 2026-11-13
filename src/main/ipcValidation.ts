@@ -46,6 +46,16 @@ export function searchText(value: unknown): string {
   if (typeof value !== 'string' || value.length > 120) throw new Error('Invalid search text.');
   return value;
 }
+export function noArguments(values: readonly unknown[]): void {
+  if (values.length !== 0) throw new Error('This operation takes no arguments.');
+}
+export function optionalUndoToken(values: readonly unknown[]): string | undefined {
+  if (values.length > 1) throw new Error('Expected at most one undo token.');
+  if (values.length === 0) return undefined;
+  const token = values[0];
+  if (typeof token !== 'string' || !ID.test(token)) throw new Error('Invalid undo token.');
+  return token;
+}
 export function parseVideoUpdate(value: unknown, bulk: true): BulkVideoUpdate;
 export function parseVideoUpdate(value: unknown, bulk?: false): VideoUpdate;
 export function parseVideoUpdate(value: unknown, bulk = false): VideoUpdate | BulkVideoUpdate {

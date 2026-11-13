@@ -65,9 +65,32 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<ViewMode>('grid');
   const [editingIds, setEditingIds] = useState<string[] | null>(null);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [editNotice, setEditNotice] = useState<{
+    message: string;
+    canUndo: boolean;
+    token?: string;
+    undoDescription?: string;
+  } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [editorVersion, setEditorVersion] = useState(0);
   const selectionAnchor = useRef<number>(-1);
   const selectionExtent = useRef<number>(-1);
   const listRef = useRef<HTMLUListElement>(null);
+  const editNoticeRef = useRef<HTMLDivElement>(null);
+  const focusEditNoticeRef = useRef(false);
+  const scanBusyRef = useRef(false);
+  const undoBusyRef = useRef(false);
+  const videosRef = useRef(videos);
+  const selectedRef = useRef(selected);
+  const editingIdsRef = useRef(editingIds);
+  const editorDirtyRef = useRef(editorDirty);
+  scanBusyRef.current = busy;
+  undoBusyRef.current = undoBusy;
+  videosRef.current = videos;
+  selectedRef.current = selected;
+  editingIdsRef.current = editingIds;
+  editorDirtyRef.current = editorDirty;
   const notified = useRef(false);
   const listSeq = useRef(0);
   const metaSeq = useRef(0);
@@ -100,6 +123,12 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   }
 
   useEffect(() => {
+    const shouldFocus = focusEditNoticeRef.current;
+    focusEditNoticeRef.current = false;
+    if (shouldFocus && editNotice && !editingIds) editNoticeRef.current?.focus();
+  }, [editNotice, editingIds]);
+
+  useEffect(() => {
     let active = true;
     api
       .getHealth()
@@ -117,50 +146,85 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   useEffect(() => {
     function key(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
-      if (editingIds || (target instanceof Element && target.closest('.detail-panel'))) return;
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === 'z' &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.repeat
+      ) {
+        if (
+          editorDirtyRef.current ||
+          (target instanceof Element &&
+            (target.matches('input, textarea, select, [contenteditable=true]') ||
+              target.closest('[role="combobox"][aria-expanded="true"]')))
+        )
+          return;
+        event.preventDefault();
+        void undoEdit();
+        return;
+      }
+      if (editingIdsRef.current || (target instanceof Element && target.closest('.detail-panel')))
+        return;
       if (
         target instanceof Element &&
         target.matches('input, textarea, select, [contenteditable=true]')
       )
         return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && videos) {
+      const currentVideos = videosRef.current;
+      const currentSelected = selectedRef.current;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && currentVideos) {
         event.preventDefault();
-        setSelected(new Set(videos.map((v) => v.id)));
+        setSelected(new Set(currentVideos.map((v) => v.id)));
         return;
       }
       if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (event.key.toLowerCase() === 'e' && selected.size) {
+      if (event.key.toLowerCase() === 'e' && currentSelected.size) {
         event.preventDefault();
-        setEditingIds([...selected]);
+        setEditingIds([...currentSelected]);
       }
-      if (event.key.toLowerCase() === 'f' && selected.size === 1) {
+      if (event.key.toLowerCase() === 'f' && currentSelected.size === 1) {
         event.preventDefault();
-        const id = [...selected][0]!;
+        const id = [...currentSelected][0]!;
         void api
           .getVideoDetails(id)
           .then((d) => api.updateVideo(id, { favorite: !d.favorite }))
-          .then(() => reload([id]))
+          .then(async (result) => {
+            await reload([id]);
+            if (result.undoToken)
+              setEditNotice({
+                message: `Saved favorite for ${result.displayTitle}`,
+                canUndo: true,
+                token: result.undoToken,
+              });
+            else setEditNotice(null);
+          })
           .catch((caught: unknown) => setLoadError(messageOf(caught)));
       }
       if (
         ['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key) &&
-        videos?.length
+        currentVideos?.length
       ) {
         event.preventDefault();
         const delta = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1;
         const current =
-          selectionExtent.current < 0 ? (delta > 0 ? -1 : videos.length) : selectionExtent.current;
-        const next = Math.max(0, Math.min(videos.length - 1, current + delta));
+          selectionExtent.current < 0
+            ? delta > 0
+              ? -1
+              : currentVideos.length
+            : selectionExtent.current;
+        const next = Math.max(0, Math.min(currentVideos.length - 1, current + delta));
         selectionExtent.current = next;
         if (event.shiftKey) {
           if (selectionAnchor.current < 0)
-            selectionAnchor.current = current < 0 || current >= videos.length ? next : current;
+            selectionAnchor.current =
+              current < 0 || current >= currentVideos.length ? next : current;
           const low = Math.min(selectionAnchor.current, next),
             high = Math.max(selectionAnchor.current, next);
-          setSelected(new Set(videos.slice(low, high + 1).map((v) => v.id)));
+          setSelected(new Set(currentVideos.slice(low, high + 1).map((v) => v.id)));
         } else {
           selectionAnchor.current = next;
-          setSelected(new Set([videos[next]!.id]));
+          setSelected(new Set([currentVideos[next]!.id]));
         }
         queueMicrotask(() =>
           listRef.current?.querySelector<HTMLElement>(`[data-video-index="${next}"]`)?.focus(),
@@ -171,7 +235,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     return () => window.removeEventListener('keydown', key);
     // reload intentionally reads the latest query and is recreated during render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, editingIds, selected, videos]);
+  }, [api, editingIds, editorDirty, selected, videos]);
 
   const queryRef = useRef(query);
   queryRef.current = query;
@@ -357,6 +421,49 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     });
   }
 
+  async function undoEdit(token?: string): Promise<void> {
+    if (editorDirtyRef.current || scanBusyRef.current || undoBusyRef.current) return;
+    const currentEditingIds = editingIdsRef.current;
+    const currentSelected = selectedRef.current;
+    undoBusyRef.current = true;
+    setUndoBusy(true);
+    setLoadError(null);
+    try {
+      const result = await api.undoLastEdit(token);
+      if (!result) {
+        focusEditNoticeRef.current = true;
+        setEditNotice({ message: 'Nothing to undo', canUndo: false });
+        return;
+      }
+      if (result.status === 'stale') {
+        focusEditNoticeRef.current = true;
+        setEditNotice({
+          message: 'That save is no longer the latest edit and cannot be undone here.',
+          canUndo: false,
+        });
+        return;
+      }
+      await reload(currentEditingIds ?? [...currentSelected]);
+      if (currentEditingIds) setEditorVersion((value) => value + 1);
+      const suffix = `${result.skipped ? ` · ${result.skipped} unavailable` : ''}${result.conflicts ? ` · ${result.conflicts} ${result.conflicts === 1 ? 'conflict' : 'conflicts'}` : ''}`;
+      focusEditNoticeRef.current = true;
+      setEditNotice({
+        message:
+          result.restored === 1 && result.title
+            ? `Undid edit to ${result.title}${suffix}`
+            : `Undid edit to ${result.restored} ${result.restored === 1 ? 'video' : 'videos'}${suffix}`,
+        canUndo: result.canUndo,
+        token: result.undoToken,
+        undoDescription: result.undoDescription,
+      });
+    } catch (caught) {
+      setLoadError(messageOf(caught));
+    } finally {
+      undoBusyRef.current = false;
+      setUndoBusy(false);
+    }
+  }
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -459,6 +566,29 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             </div>
           ) : null}
           {notice ? <p role="status">{notice}</p> : null}
+          {editNotice ? (
+            <div
+              ref={editNoticeRef}
+              tabIndex={-1}
+              role="status"
+              aria-live="polite"
+              className="edit-notice"
+            >
+              <span>{editNotice.message}</span>
+              {editNotice.canUndo ? (
+                <>
+                  <span aria-hidden="true"> · </span>
+                  <button
+                    type="button"
+                    disabled={busy || undoBusy || editorDirty}
+                    onClick={() => void undoEdit(editNotice.token)}
+                  >
+                    {editNotice.undoDescription ? `Undo ${editNotice.undoDescription}` : 'Undo'}
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           <FilterBar
             facets={facets}
             value={filters}
@@ -560,16 +690,25 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       </div>
       {editingIds ? (
         <DetailPanel
-          key={editingIds.join(',')}
+          key={`${editingIds.join(',')}:${editorVersion}`}
           api={api}
           ids={editingIds}
           onClose={() => {
+            setEditorDirty(false);
             setEditingIds(null);
             queueMicrotask(() =>
               listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus(),
             );
           }}
-          onSaved={() => reload(editingIds)}
+          onDirtyChange={setEditorDirty}
+          onSaved={async (count, token) => {
+            await reload(editingIds);
+            setEditNotice({
+              message: `Saved ${count} ${count === 1 ? 'video' : 'videos'}`,
+              canUndo: true,
+              token,
+            });
+          }}
         />
       ) : null}
       <footer>

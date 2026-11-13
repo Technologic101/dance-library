@@ -74,11 +74,60 @@ describe('createLibraryService', () => {
     await service.updateVideo('drop', { title: 'Redirected' });
     expect(service.getVideoDetails('keep').title).toBe('Redirected');
     const tag = service.createCatalogValue('tag', 'Merged tag');
-    expect(await service.bulkUpdateVideos(['drop'], { addTagIds: [tag.id] })).toEqual({
+    expect(await service.bulkUpdateVideos(['drop'], { addTagIds: [tag.id] })).toMatchObject({
       changed: 1,
       requested: 1,
     });
     expect(service.getVideoDetails('keep').tags.map((x) => x.name)).toEqual(['Merged tag']);
+  });
+  it('undoes onto a redirect target and skips a removed item without losing other restores', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    for (const id of ['keep', 'drop', 'removed'])
+      db.prepare(`INSERT INTO videos(id,title,created_at,updated_at) VALUES(?, ?, 't','t')`).run(
+        id,
+        `${id} before`,
+      );
+    const repo = createRepository(db);
+    const service = createLibraryService(db, tempDir(), idleDeps());
+    await service.bulkUpdateVideos(['drop', 'removed'], { title: 'edited' });
+    repo.mergeVideos('keep', ['drop'], 'now');
+    db.prepare(`DELETE FROM videos WHERE id='removed'`).run();
+    expect(await service.undoLastEdit()).toMatchObject({
+      status: 'undone',
+      restored: 1,
+      skipped: 1,
+      conflicts: 1,
+    });
+    expect(service.getVideoDetails('keep').title).toBe('keep before');
+    expect(await service.undoLastEdit()).toBeNull();
+  });
+  it('undoes safely after a merge adds data to the edited target', async () => {
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    for (const [id, title] of [
+      ['keep', 'Keep title'],
+      ['drop', null],
+    ] as const)
+      db.prepare(`INSERT INTO videos(id,title,created_at,updated_at) VALUES(?,?,'t','t')`).run(
+        id,
+        title,
+      );
+    const service = createLibraryService(db, tempDir(), idleDeps());
+    const original = service.createCatalogValue('tag', 'Original');
+    const added = service.createCatalogValue('tag', 'Added');
+    db.prepare(`INSERT INTO video_tags(video_id,tag_id) VALUES('keep',?),('keep',?)`).run(
+      original.id,
+      added.id,
+    );
+    await service.bulkUpdateVideos(['drop'], { title: 'Edited', addTagIds: [added.id] });
+    createRepository(db).mergeVideos('keep', ['drop'], 'now');
+    expect(await service.undoLastEdit()).toMatchObject({ status: 'undone', conflicts: 2 });
+    expect(service.getVideoDetails('keep').title).toBe('Keep title');
+    expect(service.getVideoDetails('keep').tags.map((value) => value.name)).toEqual([
+      'Added',
+      'Original',
+    ]);
   });
   it('rejects a missing folder, a duplicate, and a nested folder', async () => {
     const root = tempDir();
@@ -171,6 +220,30 @@ describe('createLibraryService', () => {
     expect(await service.restoreVideos(['vid'])).toEqual({ changed: 1, requested: 1 });
     expect(service.listVideos().items).toHaveLength(1);
     expect(service.listVideos({ excluded: true }).items).toEqual([]);
+    expect(fs.readFileSync(video, 'utf8')).toBe('video-bytes');
+  });
+
+  it('keeps undoable excluded metadata through the real library removal path', async () => {
+    const root = tempDir();
+    const video = path.join(root, 'clip.mp4');
+    fs.writeFileSync(video, 'video-bytes');
+    const db = openCatalog(path.join(tempDir(), 'catalog.sqlite'));
+    databases.push(db);
+    const service = createLibraryService(db, tempDir(), idleDeps());
+    db.prepare(
+      `INSERT INTO libraries(id,path,label,created_at,updated_at) VALUES('lib',?,'clips','t','t')`,
+    ).run(root);
+    db.prepare(
+      `INSERT INTO videos(id,title,created_at,updated_at) VALUES('vid','Restore me','t','t')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO video_locations(id,video_id,library_id,path,filename,created_at,updated_at) VALUES('loc','vid','lib',?,'clip.mp4','t','t')`,
+    ).run(video);
+    await service.updateVideo('vid', { title: null });
+    await service.excludeVideos(['vid']);
+    await service.removeLibrary('lib');
+    expect(await service.undoLastEdit()).toMatchObject({ status: 'undone', restored: 1 });
+    expect(service.getVideoDetails('vid').title).toBe('Restore me');
     expect(fs.readFileSync(video, 'utf8')).toBe('video-bytes');
   });
 });
