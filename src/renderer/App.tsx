@@ -66,11 +66,19 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const [view, setView] = useState<ViewMode>('grid');
   const [editingIds, setEditingIds] = useState<string[] | null>(null);
   const [editorDirty, setEditorDirty] = useState(false);
-  const [editNotice, setEditNotice] = useState<{ message: string; canUndo: boolean } | null>(null);
+  const [editNotice, setEditNotice] = useState<{
+    message: string;
+    canUndo: boolean;
+    token?: string;
+  } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
   const [editorVersion, setEditorVersion] = useState(0);
   const selectionAnchor = useRef<number>(-1);
   const selectionExtent = useRef<number>(-1);
   const listRef = useRef<HTMLUListElement>(null);
+  const editNoticeRef = useRef<HTMLDivElement>(null);
+  const scanBusyRef = useRef(false);
+  scanBusyRef.current = busy;
   const notified = useRef(false);
   const listSeq = useRef(0);
   const metaSeq = useRef(0);
@@ -120,7 +128,13 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   useEffect(() => {
     function key(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === 'z' &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.repeat
+      ) {
         if (
           editorDirty ||
           (target instanceof Element &&
@@ -154,7 +168,16 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         void api
           .getVideoDetails(id)
           .then((d) => api.updateVideo(id, { favorite: !d.favorite }))
-          .then(() => reload([id]))
+          .then(async (result) => {
+            await reload([id]);
+            if (result.undoToken)
+              setEditNotice({
+                message: `Saved favorite for ${result.displayTitle}`,
+                canUndo: true,
+                token: result.undoToken,
+              });
+            else setEditNotice(null);
+          })
           .catch((caught: unknown) => setLoadError(messageOf(caught)));
       }
       if (
@@ -372,27 +395,39 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     });
   }
 
-  async function undoEdit(): Promise<void> {
-    if (editorDirty || busy) return;
-    setBusy(true);
+  async function undoEdit(token?: string): Promise<void> {
+    if (editorDirty || scanBusyRef.current || undoBusy) return;
+    setUndoBusy(true);
     setLoadError(null);
     try {
-      const result = await api.undoLastEdit();
+      const result = await api.undoLastEdit(token);
       if (!result) {
         setEditNotice({ message: 'Nothing to undo', canUndo: false });
         return;
       }
-      await reload(editingIds ?? []);
+      if (result.status === 'stale') {
+        setEditNotice({
+          message: 'That save is no longer the latest edit and cannot be undone here.',
+          canUndo: false,
+        });
+        return;
+      }
+      await reload(editingIds ?? [...selected]);
       if (editingIds) setEditorVersion((value) => value + 1);
-      const suffix = result.skipped ? ` · ${result.skipped} unavailable` : '';
+      const suffix = `${result.skipped ? ` · ${result.skipped} unavailable` : ''}${result.conflicts ? ` · ${result.conflicts} conflicts` : ''}`;
       setEditNotice({
-        message: `Undid edit to ${result.restored} ${result.restored === 1 ? 'video' : 'videos'}${suffix}`,
-        canUndo: false,
+        message:
+          result.restored === 1 && result.title
+            ? `Undid edit to ${result.title}${suffix}`
+            : `Undid edit to ${result.restored} ${result.restored === 1 ? 'video' : 'videos'}${suffix}`,
+        canUndo: result.canUndo,
+        token: result.undoToken,
       });
+      queueMicrotask(() => editNoticeRef.current?.focus());
     } catch (caught) {
       setLoadError(messageOf(caught));
     } finally {
-      setBusy(false);
+      setUndoBusy(false);
     }
   }
 
@@ -499,15 +534,21 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
           ) : null}
           {notice ? <p role="status">{notice}</p> : null}
           {editNotice ? (
-            <div role="status" aria-live="polite" className="edit-notice">
+            <div
+              ref={editNoticeRef}
+              tabIndex={-1}
+              role="status"
+              aria-live="polite"
+              className="edit-notice"
+            >
               <span>{editNotice.message}</span>
               {editNotice.canUndo ? (
                 <>
                   <span aria-hidden="true"> · </span>
                   <button
                     type="button"
-                    disabled={busy || editorDirty}
-                    onClick={() => void undoEdit()}
+                    disabled={busy || undoBusy || editorDirty}
+                    onClick={() => void undoEdit(editNotice.token)}
                   >
                     Undo
                   </button>
@@ -627,11 +668,12 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
             );
           }}
           onDirtyChange={setEditorDirty}
-          onSaved={async (count) => {
+          onSaved={async (count, token) => {
             await reload(editingIds);
             setEditNotice({
               message: `Saved ${count} ${count === 1 ? 'video' : 'videos'}`,
               canUndo: true,
+              token,
             });
           }}
         />

@@ -374,7 +374,7 @@ export function createRepository(db: Database.Database) {
      * Drops content rows that have no locations and no user-entered fields.
      * Returns thumbnail file names so the caller can delete only those files.
      */
-    deleteEmptyOrphans(): string[] {
+    deleteEmptyOrphans(protectedIds: ReadonlySet<string> = new Set()): string[] {
       const rows = db
         .prepare(
           `SELECT id, thumbnail_file AS thumbnailFile FROM videos v
@@ -390,16 +390,17 @@ export function createRepository(db: Database.Database) {
              )`,
         )
         .all() as { id: string; thumbnailFile: string | null }[];
+      const deletable = rows.filter((row) => !protectedIds.has(row.id));
       const remove = db.prepare(`DELETE FROM videos WHERE id = ?`);
       const prune = db.prepare(
         `DELETE FROM video_redirects WHERE to_id NOT IN (SELECT id FROM videos)`,
       );
       const apply = db.transaction(() => {
-        for (const row of rows) remove.run(row.id);
+        for (const row of deletable) remove.run(row.id);
         prune.run();
       });
       apply();
-      return rows
+      return deletable
         .map((row) => row.thumbnailFile)
         .filter((file): file is string => file != null && file.length > 0);
     },

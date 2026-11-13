@@ -9,6 +9,7 @@ import type {
   LibrarySummary,
   VideoDetails,
   VideoListItem,
+  VideoUpdate,
 } from '../shared/api';
 import { formatVideoMeta } from '../shared/format';
 import { App } from './App';
@@ -160,8 +161,13 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
       favorite: false,
       notes: null,
       lessonDemos: [],
+      undoToken: 'undo-token',
     }),
-    bulkUpdateVideos: async (ids) => ({ changed: ids.length, requested: ids.length }),
+    bulkUpdateVideos: async (ids) => ({
+      changed: ids.length,
+      requested: ids.length,
+      undoToken: 'undo-token',
+    }),
     undoLastEdit: async () => null,
     searchCatalogValues: async () => [],
     createCatalogValue: async (_kind, name) => ({ id: name.toLowerCase(), name }),
@@ -274,6 +280,7 @@ describe('App', () => {
       favorite: false,
       notes: null,
       lessonDemos: [],
+      undoToken: 'strict-save',
     }));
     api({ updateVideo });
     render(
@@ -294,7 +301,13 @@ describe('App', () => {
   });
 
   it('undoes from the save status, refreshes, and announces the result', async () => {
-    const undoLastEdit = vi.fn(async () => ({ restored: 1, skipped: 0 }));
+    const undoLastEdit = vi.fn(async () => ({
+      status: 'undone' as const,
+      restored: 1,
+      skipped: 0,
+      conflicts: 0,
+      canUndo: false,
+    }));
     const listVideos = vi.fn(async () => ({ items: [present, missing], total: 2 }));
     api({ undoLastEdit, listVideos });
     render(<App />);
@@ -316,7 +329,13 @@ describe('App', () => {
     ['Control', { ctrlKey: true }],
     ['Command', { metaKey: true }],
   ])('keeps native %s+Z while typing in an input', async (_name, modifier) => {
-    const undoLastEdit = vi.fn(async () => ({ restored: 1, skipped: 0 }));
+    const undoLastEdit = vi.fn(async () => ({
+      status: 'undone' as const,
+      restored: 1,
+      skipped: 0,
+      conflicts: 0,
+      canUndo: false,
+    }));
     api({ undoLastEdit });
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
@@ -326,8 +345,87 @@ describe('App', () => {
     expect(undoLastEdit).not.toHaveBeenCalled();
   });
 
+  it('uses Ctrl+Z outside fields but not in a textarea or catalog combobox', async () => {
+    const undoLastEdit = vi.fn(async () => ({
+      status: 'undone' as const,
+      restored: 1,
+      skipped: 0,
+      conflicts: 0,
+      canUndo: false,
+      title: 'lesson-basic.mp4',
+    }));
+    api({ undoLastEdit });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(undoLastEdit).toHaveBeenCalledOnce());
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    const editor = await screen.findByRole('dialog');
+    fireEvent.keyDown(within(editor).getByRole('textbox', { name: 'Notes' }), {
+      key: 'z',
+      ctrlKey: true,
+    });
+    fireEvent.keyDown(within(editor).getByRole('combobox', { name: 'Style' }), {
+      key: 'z',
+      ctrlKey: true,
+    });
+    expect(undoLastEdit).toHaveBeenCalledOnce();
+    fireEvent.keyDown(window, { key: 'Z', ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true, altKey: true });
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true, repeat: true });
+    expect(undoLastEdit).toHaveBeenCalledOnce();
+  });
+
+  it('remounts an open clean editor with values restored by undo', async () => {
+    let title: string | null = null;
+    const getVideoDetails = vi.fn(async (id: string) => ({ ...apiDetails(id), title }));
+    const updateVideo = vi.fn(async (id: string, patch: VideoUpdate) => {
+      title = patch.title ?? null;
+      return {
+        ...apiDetails(id),
+        title,
+        displayTitle: title ?? 'lesson-basic.mp4',
+        undoToken: 'edit-1',
+      };
+    });
+    const undoLastEdit = vi.fn(async () => {
+      title = null;
+      return {
+        status: 'undone' as const,
+        restored: 1,
+        skipped: 0,
+        conflicts: 0,
+        canUndo: false,
+        title: 'lesson-basic.mp4',
+      };
+    });
+    api({ getVideoDetails, updateVideo, undoLastEdit });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'e' });
+    let input = await screen.findByRole('textbox', { name: 'Title' });
+    fireEvent.change(input, { target: { value: 'Edited title' } });
+    fireEvent.keyDown(input.closest('aside')!, { key: 's', ctrlKey: true });
+    await screen.findByRole('button', { name: 'Undo' });
+    fireEvent.keyDown(window, { key: 'e' });
+    input = await screen.findByRole('textbox', { name: 'Title' });
+    expect((input as HTMLInputElement).value).toBe('Edited title');
+    fireEvent.keyDown(input.closest('aside')!, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(undoLastEdit).toHaveBeenCalledOnce());
+    input = await screen.findByRole('textbox', { name: 'Title' });
+    expect((input as HTMLInputElement).value).toBe('');
+  });
+
   it('disables and ignores global undo while the editor has unsaved changes', async () => {
-    const undoLastEdit = vi.fn(async () => ({ restored: 1, skipped: 0 }));
+    const undoLastEdit = vi.fn(async () => ({
+      status: 'undone' as const,
+      restored: 1,
+      skipped: 0,
+      conflicts: 0,
+      canUndo: false,
+    }));
     api({ undoLastEdit });
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
@@ -545,7 +643,6 @@ describe('App', () => {
     fireEvent.change(style, { target: { value: 'Zo' } });
     expect(await screen.findByRole('option', { name: 'Zouk' })).toBeTruthy();
     fireEvent.click(within(editor).getByRole('button', { name: 'Leave style unchanged' }));
-    expect((style as HTMLInputElement).value).toBe('Zouk');
     expect(screen.queryByRole('option', { name: 'Zouk' })).toBeNull();
     fireEvent.keyDown(style, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -713,8 +810,11 @@ describe('App', () => {
     const style = within(editor).getByRole('combobox', { name: 'Style' });
     fireEvent.change(style, { target: { value: '' } });
     expect((style as HTMLInputElement).value).toBe('');
-    fireEvent.click(within(editor).getByRole('button', { name: 'Leave style unchanged' }));
-    expect((style as HTMLInputElement).value).toBe('Zouk');
+    expect(
+      within(editor)
+        .getByRole('button', { name: 'Leave style unchanged' })
+        .hasAttribute('disabled'),
+    ).toBe(true);
     fireEvent.change(style, { target: { value: '' } });
     fireEvent.change(style, { target: { value: 'Samba' } });
     expect((style as HTMLInputElement).value).toBe('Samba');
@@ -722,8 +822,9 @@ describe('App', () => {
     const date = within(editor).getByLabelText('Date');
     fireEvent.change(date, { target: { value: '' } });
     expect((date as HTMLInputElement).value).toBe('');
-    fireEvent.click(within(editor).getByRole('button', { name: 'Leave date unchanged' }));
-    expect((date as HTMLInputElement).value).toBe('2024-05-01');
+    expect(
+      within(editor).getByRole('button', { name: 'Leave date unchanged' }).hasAttribute('disabled'),
+    ).toBe(true);
     fireEvent.change(date, { target: { value: '' } });
     fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
     await waitFor(() =>

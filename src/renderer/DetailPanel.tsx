@@ -22,7 +22,7 @@ export function DetailPanel({
   api: DanceLibraryApi;
   ids: string[];
   onClose: () => void;
-  onSaved: (count: number) => Promise<void>;
+  onSaved: (count: number, undoToken: string) => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const bulk = ids.length > 1;
@@ -121,6 +121,7 @@ export function DetailPanel({
       setError(null);
       setSaving(true);
       let savedCount = 1;
+      let undoToken: string | null | undefined;
       if (bulk) {
         const patch: BulkVideoUpdate = {};
         for (const key of dirty) {
@@ -154,6 +155,7 @@ export function DetailPanel({
         if (removeTagIds) patch.removeTagIds = removeTagIds;
         const result = await api.bulkUpdateVideos(ids, patch);
         savedCount = result.changed;
+        undoToken = result.undoToken;
         if (result.changed !== result.requested)
           throw new Error(
             `Updated ${result.changed} of ${result.requested} videos. The selection changed; please review it.`,
@@ -176,10 +178,13 @@ export function DetailPanel({
           );
         if (dirty.has('tags'))
           patch.tagIds = await valueIds('tag', String(values.tags ?? ''), true);
-        if (Object.keys(patch).length) await api.updateVideo(ids[0]!, patch);
+        if (Object.keys(patch).length) {
+          const result = await api.updateVideo(ids[0]!, patch);
+          undoToken = result.undoToken;
+        }
       }
       if (!mounted.current) return;
-      await onSaved(savedCount);
+      if (undoToken) await onSaved(savedCount, undoToken);
       if (!mounted.current) return;
       onClose();
     } catch (e) {
@@ -281,7 +286,6 @@ export function DetailPanel({
             count={ids.length}
             dirty={dirty}
             value={values.title}
-            commonValue={commonValues(details).title}
             hintId={titleClearHintId}
             onLeave={() => leaveUnchanged('title', first.current)}
             onClear={() => set('title', null)}
@@ -305,18 +309,23 @@ export function DetailPanel({
         <div className="field-actions">
           <button
             type="button"
-            disabled={
-              !dirty.has('styleName') && values.styleName === commonValues(details).styleName
-            }
+            disabled={!dirty.has('styleName')}
             onClick={() => leaveUnchanged('styleName', styleInput.current)}
           >
             Leave style unchanged
           </button>
-          <button type="button" onClick={() => set('styleName', null)}>
+          <button
+            type="button"
+            aria-pressed={dirty.has('styleName') && values.styleName === null}
+            aria-describedby={styleClearHintId}
+            onClick={() => set('styleName', null)}
+          >
             Clear style on all
           </button>
           {dirty.has('styleName') && values.styleName === null ? (
-            <small id={styleClearHintId}>Will be cleared on {ids.length} videos</small>
+            <small id={styleClearHintId} aria-live="polite">
+              Will be cleared on {ids.length} videos
+            </small>
           ) : null}
         </div>
       ) : null}
@@ -376,7 +385,6 @@ export function DetailPanel({
             count={ids.length}
             dirty={dirty}
             value={values.eventName}
-            commonValue={commonValues(details).eventName}
             hintId={eventClearHintId}
             onLeave={() => leaveUnchanged('eventName', eventInput.current)}
             onClear={() => set('eventName', null)}
@@ -409,18 +417,23 @@ export function DetailPanel({
           <div className="field-actions">
             <button
               type="button"
-              disabled={
-                !dirty.has('eventDate') && values.eventDate === commonValues(details).eventDate
-              }
+              disabled={!dirty.has('eventDate')}
               onClick={() => leaveUnchanged('eventDate', dateInput.current)}
             >
               Leave date unchanged
             </button>
-            <button type="button" onClick={() => set('eventDate', null)}>
+            <button
+              type="button"
+              aria-pressed={dirty.has('eventDate') && values.eventDate === null}
+              aria-describedby={dateClearHintId}
+              onClick={() => set('eventDate', null)}
+            >
               Clear date on all
             </button>
             {dirty.has('eventDate') && values.eventDate === null ? (
-              <small id={dateClearHintId}>Will be cleared on {ids.length} videos</small>
+              <small id={dateClearHintId} aria-live="polite">
+                Will be cleared on {ids.length} videos
+              </small>
             ) : null}
           </div>
         ) : null}
@@ -509,7 +522,6 @@ export function DetailPanel({
             count={ids.length}
             dirty={dirty}
             value={values.notes}
-            commonValue={commonValues(details).notes}
             hintId={notesClearHintId}
             onLeave={() => leaveUnchanged('notes', notesInput.current)}
             onClear={() => set('notes', null)}
@@ -544,7 +556,6 @@ function BulkClearActions({
   count,
   dirty,
   value,
-  commonValue,
   hintId,
   onLeave,
   onClear,
@@ -553,7 +564,6 @@ function BulkClearActions({
   count: number;
   dirty: Set<string>;
   value: unknown;
-  commonValue: unknown;
   hintId: string;
   onLeave: () => void;
   onClear: () => void;
@@ -562,13 +572,17 @@ function BulkClearActions({
   const armed = dirty.has(key) && value === null;
   return (
     <div className="field-actions">
-      <button type="button" disabled={!dirty.has(key) && value === commonValue} onClick={onLeave}>
+      <button type="button" disabled={!dirty.has(key)} onClick={onLeave}>
         Leave {field} unchanged
       </button>
-      <button type="button" onClick={onClear}>
+      <button type="button" aria-pressed={armed} aria-describedby={hintId} onClick={onClear}>
         Clear {field} on all
       </button>
-      {armed ? <small id={hintId}>Will be cleared on {count} videos</small> : null}
+      {armed ? (
+        <small id={hintId} aria-live="polite">
+          Will be cleared on {count} videos
+        </small>
+      ) : null}
     </div>
   );
 }

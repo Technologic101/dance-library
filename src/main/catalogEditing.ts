@@ -23,14 +23,17 @@ const scalarColumns = {
 type ScalarKey = keyof typeof scalarColumns;
 type UndoSnapshot = {
   id: string;
-  scalars: Partial<Record<ScalarKey, unknown>>;
-  instructorIds?: string[];
-  tagIds?: string[];
+  scalars: Partial<Record<ScalarKey, { before: unknown; after: unknown }>>;
+  instructorDelta?: RelationDelta;
+  tagDelta?: RelationDelta;
 };
-type UndoBatch = { snapshots: UndoSnapshot[] };
+type RelationDelta = { added: string[]; removed: string[] };
+type CreatedValue = { kind: CatalogValueKind; id: string };
+type UndoBatch = { token: string; snapshots: UndoSnapshot[]; createdValues: CreatedValue[] };
 
 export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
   const undoStack: UndoBatch[] = [];
+  const pendingCreatedValues = new Map<string, CreatedValue>();
   function details(id: string): VideoDetails {
     const row = db
       .prepare(
@@ -150,11 +153,11 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
   };
   const touch = db.prepare('UPDATE videos SET updated_at=? WHERE id=?');
 
-  function snapshot(id: string, patch: VideoUpdate | BulkVideoUpdate): UndoSnapshot {
+  function snapshot(id: string, patch: VideoUpdate | BulkVideoUpdate) {
     const keys = (Object.keys(scalarColumns) as ScalarKey[]).filter((key) =>
       Object.prototype.hasOwnProperty.call(patch, key),
     );
-    const scalars: UndoSnapshot['scalars'] = {};
+    const scalars: Partial<Record<ScalarKey, unknown>> = {};
     if (keys.length) {
       const columns = keys.map((key) => `${scalarColumns[key]} AS ${key}`).join(', ');
       const row = db.prepare(`SELECT ${columns} FROM videos WHERE id=?`).get(id) as Record<
@@ -182,27 +185,69 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
     };
   }
 
-  function remember(batch: UndoBatch): void {
-    if (!batch.snapshots.length) return;
+  function undoSnapshot(
+    before: ReturnType<typeof snapshot>,
+    after: ReturnType<typeof snapshot>,
+  ): UndoSnapshot | null {
+    const scalars: UndoSnapshot['scalars'] = {};
+    for (const key of Object.keys(before.scalars) as ScalarKey[])
+      if (!Object.is(before.scalars[key], after.scalars[key]))
+        scalars[key] = { before: before.scalars[key], after: after.scalars[key] };
+    const delta = (oldIds?: string[], newIds?: string[]): RelationDelta | undefined => {
+      if (!oldIds || !newIds) return undefined;
+      const old = new Set(oldIds),
+        next = new Set(newIds);
+      const change = {
+        added: newIds.filter((id) => !old.has(id)),
+        removed: oldIds.filter((id) => !next.has(id)),
+      };
+      return change.added.length || change.removed.length ? change : undefined;
+    };
+    const instructorDelta = delta(before.instructorIds, after.instructorIds);
+    const tagDelta = delta(before.tagIds, after.tagIds);
+    if (!Object.keys(scalars).length && !instructorDelta && !tagDelta) return null;
+    return { id: before.id, scalars, instructorDelta, tagDelta };
+  }
+
+  function remember(
+    snapshots: UndoSnapshot[],
+    patch: VideoUpdate | BulkVideoUpdate,
+  ): string | null {
+    if (!snapshots.length) return null;
+    const referenced = new Set<string>();
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === 'styleId' && typeof value === 'string') referenced.add(value);
+      if (key.endsWith('Ids') && Array.isArray(value)) for (const id of value) referenced.add(id);
+    }
+    const createdValues = [...pendingCreatedValues.values()].filter((value) =>
+      referenced.has(value.id),
+    );
+    for (const value of createdValues) pendingCreatedValues.delete(value.id);
+    const batch = { token: randomUUID(), snapshots, createdValues };
     undoStack.push(batch);
     if (undoStack.length > undoLimit) undoStack.splice(0, undoStack.length - undoLimit);
+    return batch.token;
   }
 
   return {
     getVideoDetails: details,
-    updateVideo(id: string, patch: VideoUpdate): VideoDetails {
-      let before: UndoSnapshot | undefined;
+    updateVideo(id: string, patch: VideoUpdate): VideoDetails & { undoToken: string | null } {
+      let change: UndoSnapshot | null = null;
       db.transaction(() => {
-        before = snapshot(id, patch);
+        const before = snapshot(id, patch);
         setScalars(id, patch);
         if (patch.instructorIds)
           replaceRelations(id, 'video_instructors', 'instructor_id', patch.instructorIds);
         if (patch.tagIds) replaceRelations(id, 'video_tags', 'tag_id', patch.tagIds);
+        change = undoSnapshot(before, snapshot(id, patch));
       })();
-      remember({ snapshots: [before!] });
-      return details(id);
+      const undoToken = remember(change ? [change] : [], patch);
+      return { ...details(id), undoToken };
     },
-    bulkUpdate(ids: readonly string[], patch: BulkVideoUpdate): number {
+    bulkUpdate(
+      ids: readonly string[],
+      patch: BulkVideoUpdate,
+    ): { changed: number; undoToken: string | null } {
       for (const [add, remove] of [
         [patch.addInstructorIds, patch.removeInstructorIds],
         [patch.addTagIds, patch.removeTagIds],
@@ -215,7 +260,7 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
         const relationKeys = Object.keys(relationStatements) as (keyof typeof relationStatements)[];
         for (const id of ids) {
           if (!exists.get(id)) continue;
-          snapshots.push(snapshot(id, patch));
+          const before = snapshot(id, patch);
           setScalars(id, patch);
           changed++;
           let relationChanged = false;
@@ -242,34 +287,96 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
             )
           )
             touch.run(new Date().toISOString(), id);
+          const change = undoSnapshot(before, snapshot(id, patch));
+          if (change) snapshots.push(change);
         }
       })();
-      remember({ snapshots });
-      return changed;
+      return { changed, undoToken: remember(snapshots, patch) };
     },
-    undoLastEdit(resolveId: (id: string) => string = (id) => id) {
-      const batch = undoStack.pop();
+    undoLastEdit(resolveId: (id: string) => string = (id) => id, token?: string) {
+      const batch = undoStack.at(-1);
       if (!batch) return null;
+      if (token && token !== batch.token) return { status: 'stale' as const };
       let restored = 0;
       let skipped = 0;
-      const restoredTargets = new Set<string>();
+      let conflicts = 0;
+      let title: string | undefined;
       db.transaction(() => {
         for (const before of batch.snapshots) {
           const id = resolveId(before.id);
-          if (!exists.get(id) || restoredTargets.has(id)) {
+          if (!exists.get(id)) {
             skipped++;
             continue;
           }
-          restoredTargets.add(id);
-          setScalars(id, before.scalars as VideoUpdate);
-          if (before.instructorIds)
-            replaceRelations(id, 'video_instructors', 'instructor_id', before.instructorIds);
-          if (before.tagIds) replaceRelations(id, 'video_tags', 'tag_id', before.tagIds);
-          if (!Object.keys(before.scalars).length) touch.run(new Date().toISOString(), id);
+          const restore: Partial<Record<ScalarKey, unknown>> = {};
+          for (const [key, values] of Object.entries(before.scalars) as [
+            ScalarKey,
+            { before: unknown; after: unknown },
+          ][]) {
+            const current = snapshot(id, { [key]: null }).scalars[key];
+            if (!Object.is(current, values.after)) {
+              conflicts++;
+              continue;
+            }
+            if (
+              key === 'videoType' &&
+              db
+                .prepare('SELECT 1 FROM video_links WHERE video_id=? OR other_video_id=? LIMIT 1')
+                .get(id, id)
+            ) {
+              conflicts++;
+              continue;
+            }
+            restore[key] = values.before;
+          }
+          setScalars(id, restore as VideoUpdate);
+          const inverse = (
+            delta: RelationDelta | undefined,
+            table: 'video_instructors' | 'video_tags',
+            column: 'instructor_id' | 'tag_id',
+          ) => {
+            if (!delta) return;
+            const remove = db.prepare(`DELETE FROM ${table} WHERE video_id=? AND ${column}=?`);
+            const add = db.prepare(
+              `INSERT OR IGNORE INTO ${table}(video_id,${column}) VALUES(?,?)`,
+            );
+            for (const value of delta.added) remove.run(id, value);
+            for (const value of delta.removed) add.run(id, value);
+          };
+          inverse(before.instructorDelta, 'video_instructors', 'instructor_id');
+          inverse(before.tagDelta, 'video_tags', 'tag_id');
+          if (!Object.keys(restore).length) touch.run(new Date().toISOString(), id);
           restored++;
+          if (batch.snapshots.length === 1) title = details(id).displayTitle;
+        }
+        for (const value of batch.createdValues) {
+          const table = tables[value.kind];
+          if (value.kind === 'style')
+            db.prepare(
+              `DELETE FROM ${table} WHERE id=? AND builtin=0 AND NOT EXISTS (SELECT 1 FROM videos WHERE style_id=?)`,
+            ).run(value.id, value.id);
+          else {
+            const join = value.kind === 'tag' ? 'video_tags' : 'video_instructors';
+            const column = value.kind === 'tag' ? 'tag_id' : 'instructor_id';
+            db.prepare(
+              `DELETE FROM ${table} WHERE id=? AND NOT EXISTS (SELECT 1 FROM ${join} WHERE ${column}=?)`,
+            ).run(value.id, value.id);
+          }
         }
       })();
-      return { restored, skipped };
+      undoStack.pop();
+      return {
+        status: 'undone' as const,
+        restored,
+        skipped,
+        conflicts,
+        title,
+        canUndo: undoStack.length > 0,
+        undoToken: undoStack.at(-1)?.token,
+      };
+    },
+    protectedUndoIds(): ReadonlySet<string> {
+      return new Set(undoStack.flatMap((batch) => batch.snapshots.map((item) => item.id)));
     },
     searchValues(kind: CatalogValueKind, query: string, limit = 100): CatalogValue[] {
       const table = tables[kind];
@@ -305,6 +412,7 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
           clean,
           new Date().toISOString(),
         );
+      pendingCreatedValues.set(value.id, { kind, id: value.id });
       return { ...value, ...(kind === 'style' ? { builtin: false } : {}) };
     },
     linkLessonDemo(lessonId: string, demoId: string): void {

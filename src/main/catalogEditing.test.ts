@@ -76,7 +76,7 @@ describe('catalog editing', () => {
     e.updateVideo('demo', { tagIds: [a.id, b.id] });
     expect(
       e.bulkUpdate(['lesson', 'demo'], { title: 'Batch', addTagIds: [b.id], removeTagIds: [a.id] }),
-    ).toBe(2);
+    ).toMatchObject({ changed: 2 });
     expect(e.getVideoDetails('lesson').tags.map((x) => x.name)).toEqual(['B']);
     expect(e.getVideoDetails('demo').tags.map((x) => x.name)).toEqual(['B']);
     expect(e.getVideoDetails('lesson').videoType).toBe('lesson');
@@ -205,7 +205,12 @@ describe('catalog editing', () => {
       favorite: true,
       notes: 'New searchable notes',
     });
-    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    expect(e.undoLastEdit()).toMatchObject({
+      status: 'undone',
+      restored: 1,
+      skipped: 0,
+      conflicts: 0,
+    });
     expect(e.getVideoDetails('lesson')).toMatchObject({
       title: 'Old title',
       style: { name: 'Old Zouk' },
@@ -217,9 +222,11 @@ describe('catalog editing', () => {
     expect(e.getVideoDetails('lesson').instructors.map((x) => x.name)).toEqual(['Old Alice']);
     expect(e.getVideoDetails('lesson').tags.map((x) => x.name)).toEqual(['Old Elasticity']);
     const repo = createRepository(db);
-    expect(repo.listVideoSummaries({ text: 'Old searchable' }).map((x) => x.id)).toContain(
-      'lesson',
-    );
+    for (const term of ['Old searchable', 'Old Zouk', 'Old Alice', 'Old Elasticity'])
+      expect(
+        repo.listVideoSummaries({ text: term }).map((x) => x.id),
+        term,
+      ).toContain('lesson');
     for (const term of ['New title', 'New Samba', 'New Bob', 'New Spins', 'New searchable'])
       expect(
         repo.listVideoSummaries({ text: term }).map((x) => x.id),
@@ -270,7 +277,12 @@ describe('catalog editing', () => {
     db.prepare(
       `UPDATE videos SET notes='Changed later outside touched fields' WHERE id='lesson'`,
     ).run();
-    expect(e.undoLastEdit()).toEqual({ restored: 2, skipped: 0 });
+    expect(e.undoLastEdit()).toMatchObject({
+      status: 'undone',
+      restored: 2,
+      skipped: 0,
+      conflicts: 0,
+    });
     expect(e.getVideoDetails('lesson')).toMatchObject({
       title: 'Lesson before',
       style: { name: 'Bulk Zouk' },
@@ -298,9 +310,9 @@ describe('catalog editing', () => {
     e.updateVideo('lesson', { title: 'One' });
     e.updateVideo('lesson', { title: 'Two' });
     e.updateVideo('lesson', { title: 'Three' });
-    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    expect(e.undoLastEdit()).toMatchObject({ status: 'undone', restored: 1, skipped: 0 });
     expect(e.getVideoDetails('lesson').title).toBe('Two');
-    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    expect(e.undoLastEdit()).toMatchObject({ status: 'undone', restored: 1, skipped: 0 });
     expect(e.getVideoDetails('lesson').title).toBe('One');
     expect(e.undoLastEdit()).toBeNull();
   });
@@ -312,7 +324,7 @@ describe('catalog editing', () => {
        VALUES('copy-undo','lesson','lib','/dance/copy-undo.mp4','/dance/copy-undo.mp4','copy-undo.mp4',?,?)`,
     ).run(now, now);
     e.updateVideo('lesson', { title: 'Across copies' });
-    expect(e.undoLastEdit()).toEqual({ restored: 1, skipped: 0 });
+    expect(e.undoLastEdit()).toMatchObject({ status: 'undone', restored: 1, skipped: 0 });
     const item = createRepository(db)
       .listVideoSummaries({})
       .find((x) => x.id === 'lesson');
@@ -321,5 +333,61 @@ describe('catalog editing', () => {
       'copy-undo.mp4',
       'lesson.mp4',
     ]);
+  });
+
+  it('preserves later scalar changes and scan-merged relations while reporting conflicts', () => {
+    const e = createCatalogEditor(db);
+    const edited = e.createValue('tag', 'Edited tag');
+    const scanned = e.createValue('tag', 'Scanned tag');
+    e.updateVideo('lesson', { title: 'Saved title', tagIds: [edited.id] });
+    db.prepare(`UPDATE videos SET title='Changed later' WHERE id='lesson'`).run();
+    db.prepare(`INSERT INTO video_tags(video_id,tag_id) VALUES('lesson',?)`).run(scanned.id);
+    expect(e.undoLastEdit()).toMatchObject({ restored: 1, conflicts: 1 });
+    expect(e.getVideoDetails('lesson').title).toBe('Changed later');
+    expect(e.getVideoDetails('lesson').tags.map((value) => value.name)).toEqual(['Scanned tag']);
+  });
+
+  it('restores the rest of a linked video and keeps the history entry until commit', () => {
+    const e = createCatalogEditor(db);
+    const tag = e.createValue('tag', 'Linked edit');
+    e.updateVideo('other', { title: 'Before', videoType: 'social dance' });
+    const save = e.updateVideo('other', {
+      title: 'After',
+      videoType: 'lesson',
+      tagIds: [tag.id],
+    });
+    e.linkLessonDemo('other', 'demo');
+    expect(e.undoLastEdit(undefined, save.undoToken!)).toMatchObject({
+      status: 'undone',
+      restored: 1,
+      conflicts: 1,
+    });
+    expect(e.getVideoDetails('other')).toMatchObject({ title: 'Before', videoType: 'lesson' });
+    expect(e.getVideoDetails('other').tags).toEqual([]);
+  });
+
+  it('does not record no-op saves and rejects a stale notice token', () => {
+    const e = createCatalogEditor(db);
+    const first = e.updateVideo('lesson', { title: 'One' });
+    expect(e.updateVideo('lesson', { title: 'One' }).undoToken).toBeNull();
+    const second = e.updateVideo('demo', { title: 'Two' });
+    expect(e.undoLastEdit(undefined, first.undoToken!)).toEqual({ status: 'stale' });
+    expect(e.undoLastEdit(undefined, second.undoToken!)).toMatchObject({ status: 'undone' });
+  });
+
+  it('deletes values created by an undone save only when unreferenced', () => {
+    const e = createCatalogEditor(db);
+    const style = e.createValue('style', 'Ephemeral style');
+    const teacher = e.createValue('instructor', 'Ephemeral teacher');
+    const tag = e.createValue('tag', 'Ephemeral tag');
+    e.updateVideo('lesson', {
+      styleId: style.id,
+      instructorIds: [teacher.id],
+      tagIds: [tag.id],
+    });
+    expect(e.undoLastEdit()).toMatchObject({ status: 'undone' });
+    expect(e.searchValues('style', 'Ephemeral')).toEqual([]);
+    expect(e.searchValues('instructor', 'Ephemeral')).toEqual([]);
+    expect(e.searchValues('tag', 'Ephemeral')).toEqual([]);
   });
 });

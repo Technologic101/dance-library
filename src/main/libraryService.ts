@@ -78,12 +78,12 @@ export function createLibraryService(
     bulkUpdateVideos(ids: readonly string[], patch: BulkVideoUpdate): Promise<VideoChangeResult> {
       const resolved = [...new Set(ids.map((id) => repo.resolveVideoId(id)))];
       return Promise.resolve({
-        changed: editor.bulkUpdate(resolved, patch),
+        ...editor.bulkUpdate(resolved, patch),
         requested: resolved.length,
       });
     },
-    undoLastEdit() {
-      return Promise.resolve(editor.undoLastEdit((id) => repo.resolveVideoId(id)));
+    undoLastEdit(token?: string) {
+      return Promise.resolve(editor.undoLastEdit((id) => repo.resolveVideoId(id), token));
     },
     searchCatalogValues(kind: CatalogValueKind, query: string) {
       return editor.searchValues(kind, query);
@@ -155,7 +155,10 @@ export function createLibraryService(
       return enqueue(async () => {
         const removed = repo.removeLibrary(id);
         if (!removed) return false;
-        for (const name of repo.deleteEmptyOrphans()) {
+        const protectedIds = new Set(
+          [...editor.protectedUndoIds()].map((videoId) => repo.resolveVideoId(videoId)),
+        );
+        for (const name of repo.deleteEmptyOrphans(protectedIds)) {
           const base = path.basename(name);
           if (base !== name) continue;
           fs.rmSync(path.join(thumbsDir, base), { force: true });
