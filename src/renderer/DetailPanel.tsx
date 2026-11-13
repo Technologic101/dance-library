@@ -162,7 +162,7 @@ export function DetailPanel({
         if (result.changed !== result.requested) {
           if (undoToken) await onSaved(savedCount, undoToken);
           throw new Error(
-            `Updated ${result.changed} of ${result.requested} videos. The selection changed; please review it.`,
+            `Updated ${result.changed} of ${result.requested} videos. The selection changed; please review it. Close the editor to undo the saved changes.`,
           );
         }
       } else {
@@ -205,6 +205,10 @@ export function DetailPanel({
       </aside>
     );
   const mixed = '— Mixed / unchanged —';
+  const showMixedDate =
+    bulk &&
+    !dirty.has('eventDate') &&
+    (values.eventDate === undefined || differsFromCommon('eventDate'));
   const select = (
     key: string,
     label: string,
@@ -405,7 +409,7 @@ export function DetailPanel({
           ref={dateInput}
           type="date"
           value={String(values.eventDate ?? '')}
-          aria-label={`Date${bulk && !dirty.has('eventDate') && differsFromCommon('eventDate') ? ' (mixed or unchanged)' : ''}`}
+          aria-label={`Date${showMixedDate ? ' (mixed or unchanged)' : ''}`}
           aria-describedby={
             bulk && dirty.has('eventDate') && values.eventDate === null
               ? dateClearHintId
@@ -417,9 +421,7 @@ export function DetailPanel({
               : set('eventDate', e.target.value || null)
           }
         />
-        {bulk && !dirty.has('eventDate') && differsFromCommon('eventDate') ? (
-          <small>{mixed}</small>
-        ) : null}
+        {showMixedDate ? <small>{mixed}</small> : null}
         {bulk ? (
           <div className="field-actions">
             <button

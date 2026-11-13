@@ -78,10 +78,19 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   const selectionExtent = useRef<number>(-1);
   const listRef = useRef<HTMLUListElement>(null);
   const editNoticeRef = useRef<HTMLDivElement>(null);
+  const focusEditNoticeRef = useRef(false);
   const scanBusyRef = useRef(false);
   const undoBusyRef = useRef(false);
+  const videosRef = useRef(videos);
+  const selectedRef = useRef(selected);
+  const editingIdsRef = useRef(editingIds);
+  const editorDirtyRef = useRef(editorDirty);
   scanBusyRef.current = busy;
   undoBusyRef.current = undoBusy;
+  videosRef.current = videos;
+  selectedRef.current = selected;
+  editingIdsRef.current = editingIds;
+  editorDirtyRef.current = editorDirty;
   const notified = useRef(false);
   const listSeq = useRef(0);
   const metaSeq = useRef(0);
@@ -114,8 +123,10 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
   }
 
   useEffect(() => {
-    if (editNotice) editNoticeRef.current?.focus();
-  }, [editNotice]);
+    const shouldFocus = focusEditNoticeRef.current;
+    focusEditNoticeRef.current = false;
+    if (shouldFocus && editNotice && !editingIds) editNoticeRef.current?.focus();
+  }, [editNotice, editingIds]);
 
   useEffect(() => {
     let active = true;
@@ -143,7 +154,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         !event.repeat
       ) {
         if (
-          editorDirty ||
+          editorDirtyRef.current ||
           (target instanceof Element &&
             (target.matches('input, textarea, select, [contenteditable=true]') ||
               target.closest('[role="combobox"][aria-expanded="true"]')))
@@ -153,25 +164,28 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
         void undoEdit();
         return;
       }
-      if (editingIds || (target instanceof Element && target.closest('.detail-panel'))) return;
+      if (editingIdsRef.current || (target instanceof Element && target.closest('.detail-panel')))
+        return;
       if (
         target instanceof Element &&
         target.matches('input, textarea, select, [contenteditable=true]')
       )
         return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && videos) {
+      const currentVideos = videosRef.current;
+      const currentSelected = selectedRef.current;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && currentVideos) {
         event.preventDefault();
-        setSelected(new Set(videos.map((v) => v.id)));
+        setSelected(new Set(currentVideos.map((v) => v.id)));
         return;
       }
       if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (event.key.toLowerCase() === 'e' && selected.size) {
+      if (event.key.toLowerCase() === 'e' && currentSelected.size) {
         event.preventDefault();
-        setEditingIds([...selected]);
+        setEditingIds([...currentSelected]);
       }
-      if (event.key.toLowerCase() === 'f' && selected.size === 1) {
+      if (event.key.toLowerCase() === 'f' && currentSelected.size === 1) {
         event.preventDefault();
-        const id = [...selected][0]!;
+        const id = [...currentSelected][0]!;
         void api
           .getVideoDetails(id)
           .then((d) => api.updateVideo(id, { favorite: !d.favorite }))
@@ -189,23 +203,28 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       }
       if (
         ['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key) &&
-        videos?.length
+        currentVideos?.length
       ) {
         event.preventDefault();
         const delta = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1;
         const current =
-          selectionExtent.current < 0 ? (delta > 0 ? -1 : videos.length) : selectionExtent.current;
-        const next = Math.max(0, Math.min(videos.length - 1, current + delta));
+          selectionExtent.current < 0
+            ? delta > 0
+              ? -1
+              : currentVideos.length
+            : selectionExtent.current;
+        const next = Math.max(0, Math.min(currentVideos.length - 1, current + delta));
         selectionExtent.current = next;
         if (event.shiftKey) {
           if (selectionAnchor.current < 0)
-            selectionAnchor.current = current < 0 || current >= videos.length ? next : current;
+            selectionAnchor.current =
+              current < 0 || current >= currentVideos.length ? next : current;
           const low = Math.min(selectionAnchor.current, next),
             high = Math.max(selectionAnchor.current, next);
-          setSelected(new Set(videos.slice(low, high + 1).map((v) => v.id)));
+          setSelected(new Set(currentVideos.slice(low, high + 1).map((v) => v.id)));
         } else {
           selectionAnchor.current = next;
-          setSelected(new Set([videos[next]!.id]));
+          setSelected(new Set([currentVideos[next]!.id]));
         }
         queueMicrotask(() =>
           listRef.current?.querySelector<HTMLElement>(`[data-video-index="${next}"]`)?.focus(),
@@ -410,10 +429,12 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
     try {
       const result = await api.undoLastEdit(token);
       if (!result) {
+        focusEditNoticeRef.current = true;
         setEditNotice({ message: 'Nothing to undo', canUndo: false });
         return;
       }
       if (result.status === 'stale') {
+        focusEditNoticeRef.current = true;
         setEditNotice({
           message: 'That save is no longer the latest edit and cannot be undone here.',
           canUndo: false,
@@ -423,6 +444,7 @@ function LibraryScreen({ api }: { api: DanceLibraryApi }) {
       await reload(editingIds ?? [...selected]);
       if (editingIds) setEditorVersion((value) => value + 1);
       const suffix = `${result.skipped ? ` · ${result.skipped} unavailable` : ''}${result.conflicts ? ` · ${result.conflicts} ${result.conflicts === 1 ? 'conflict' : 'conflicts'}` : ''}`;
+      focusEditNoticeRef.current = true;
       setEditNotice({
         message:
           result.restored === 1 && result.title

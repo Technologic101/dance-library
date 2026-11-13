@@ -7,6 +7,7 @@ import type {
   VideoDetails,
   VideoUpdate,
 } from '../shared/api';
+import { currentMergeSequence } from './mergeSequence';
 
 const tables = { style: 'styles', instructor: 'instructors', tag: 'tags' } as const;
 const scalarColumns = {
@@ -23,6 +24,7 @@ const scalarColumns = {
 type ScalarKey = keyof typeof scalarColumns;
 type UndoSnapshot = {
   id: string;
+  mergeSequence: number;
   scalars: Partial<Record<ScalarKey, { before: unknown; after: unknown }>>;
   instructorDelta?: RelationDelta;
   tagDelta?: RelationDelta;
@@ -211,7 +213,13 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
     const instructorDelta = delta(before.instructorIds, after.instructorIds);
     const tagDelta = delta(before.tagIds, after.tagIds);
     if (!Object.keys(scalars).length && !instructorDelta && !tagDelta) return null;
-    return { id: before.id, scalars, instructorDelta, tagDelta };
+    return {
+      id: before.id,
+      mergeSequence: currentMergeSequence(db, before.id),
+      scalars,
+      instructorDelta,
+      tagDelta,
+    };
   }
 
   function remember(
@@ -360,7 +368,7 @@ export function createCatalogEditor(db: Database.Database, undoLimit = 20) {
             column: 'instructor_id' | 'tag_id',
           ) => {
             if (!delta) return;
-            if (id !== before.id) {
+            if (id !== before.id || currentMergeSequence(db, id) > before.mergeSequence) {
               conflicts++;
               return;
             }

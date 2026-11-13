@@ -12,6 +12,7 @@ import {
   type VideoType,
 } from '../../shared/api';
 import { videoListQuery } from './videoQuery';
+import { recordMergeInto } from '../mergeSequence';
 
 export type LibraryRecord = {
   id: string;
@@ -410,6 +411,7 @@ export function createRepository(db: Database.Database) {
      * Exclusion wins: a removed video stays removed after a duplicate is merged in.
      */
     mergeVideos(keepId: string, dropIds: readonly string[], now: string): void {
+      let merged = false;
       const apply = db.transaction(() => {
         for (const dropId of [...new Set(dropIds)]) {
           if (dropId === keepId) continue;
@@ -418,6 +420,7 @@ export function createRepository(db: Database.Database) {
               `SELECT full_hash AS fullHash, full_hash_kind AS fullHashKind FROM videos WHERE id = ?`,
             )
             .get(dropId) as { fullHash: string | null; fullHashKind: string | null } | undefined;
+          if (dropHash) merged = true;
           db.prepare(`UPDATE videos SET full_hash = NULL, full_hash_kind = NULL WHERE id = ?`).run(
             dropId,
           );
@@ -506,6 +509,7 @@ export function createRepository(db: Database.Database) {
         }
       });
       apply();
+      if (merged) recordMergeInto(db, keepId);
     },
 
     listLibrarySummaries(): LibrarySummary[] {

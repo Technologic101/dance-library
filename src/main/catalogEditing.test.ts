@@ -347,6 +347,20 @@ describe('catalog editing', () => {
     expect(e.getVideoDetails('lesson').tags.map((value) => value.name)).toEqual(['Scanned tag']);
   });
 
+  it('keeps an added tag when a later duplicate merge brings it into the kept video', () => {
+    const e = createCatalogEditor(db);
+    const tag = e.createValue('tag', 'Shared by duplicate');
+    e.updateVideo('lesson', { tagIds: [tag.id] });
+    db.prepare(`INSERT INTO video_tags(video_id,tag_id) VALUES('demo',?)`).run(tag.id);
+
+    createRepository(db).mergeVideos('lesson', ['demo'], '2024-01-02T00:00:00.000Z');
+
+    expect(e.undoLastEdit()).toMatchObject({ restored: 1, conflicts: 1 });
+    expect(e.getVideoDetails('lesson').tags.map((value) => value.name)).toEqual([
+      'Shared by duplicate',
+    ]);
+  });
+
   it('restores the rest of a linked video and keeps the history entry until commit', () => {
     const e = createCatalogEditor(db);
     const tag = e.createValue('tag', 'Linked edit');

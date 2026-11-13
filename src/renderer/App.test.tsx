@@ -203,6 +203,15 @@ function api(overrides: Partial<NonNullable<typeof window.danceLibrary>> = {}) {
   return notify;
 }
 
+async function openEditorAfterSelection(): Promise<void> {
+  await waitFor(() =>
+    expect(
+      screen.getAllByRole('option').some((item) => item.getAttribute('aria-selected') === 'true'),
+    ).toBe(true),
+  );
+  fireEvent.keyDown(window, { key: 'e' });
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -290,7 +299,7 @@ describe('App', () => {
     );
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const title = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(title, { target: { value: 'My lesson' } });
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
@@ -315,7 +324,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const title = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(title, { target: { value: 'Edited' } });
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
@@ -361,6 +370,9 @@ describe('App', () => {
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
     expect(undoLastEdit).toHaveBeenCalledOnce();
     finish?.();
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toContain('Nothing to undo'),
+    );
   });
 
   it('offers Undo when a partial bulk save reports an error', async () => {
@@ -380,14 +392,39 @@ describe('App', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit (2)' }));
     const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
-    fireEvent.change(within(editor).getByRole('textbox', { name: 'Title' }), {
+    const title = within(editor).getByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, {
       target: { value: 'Partial' },
     });
+    title.focus();
     fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
     expect((await within(editor).findByRole('alert')).textContent).toContain(
-      'Updated 1 of 2 videos',
+      'Close the editor to undo the saved changes',
     );
-    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+    const undo = screen.getByRole('button', { name: 'Undo' });
+    expect(undo.hasAttribute('disabled')).toBe(true);
+    expect(editor.contains(document.activeElement)).toBe(true);
+    fireEvent.click(within(editor).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(undo.hasAttribute('disabled')).toBe(false));
+  });
+
+  it('does not move focus to a notice after toggling favorite', async () => {
+    api();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('option', { name: /lesson-basic\.mp4/ }).getAttribute('aria-selected'),
+      ).toBe('true'),
+    );
+    const selected = screen.getByRole('option', { name: /lesson-basic\.mp4/ });
+    await waitFor(() => expect(document.activeElement).toBe(selected));
+
+    fireEvent.keyDown(window, { key: 'f' });
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Saved favorite'));
+    expect(document.activeElement).toBe(selected);
   });
 
   it.each([
@@ -425,7 +462,7 @@ describe('App', () => {
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
     await waitFor(() => expect(undoLastEdit).toHaveBeenCalledOnce());
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const editor = await screen.findByRole('dialog');
     fireEvent.keyDown(within(editor).getByRole('textbox', { name: 'Notes' }), {
       key: 'z',
@@ -469,12 +506,12 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     let input = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(input, { target: { value: 'Edited title' } });
     fireEvent.keyDown(input.closest('aside')!, { key: 's', ctrlKey: true });
     await screen.findByRole('button', { name: 'Undo' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     input = await screen.findByRole('textbox', { name: 'Title' });
     expect((input as HTMLInputElement).value).toBe('Edited title');
     fireEvent.keyDown(input.closest('aside')!, { key: 'z', ctrlKey: true });
@@ -495,12 +532,12 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     let title = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(title, { target: { value: 'First edit' } });
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
     await screen.findByRole('button', { name: 'Undo' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     title = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(title, { target: { value: 'Unsaved second edit' } });
     expect(screen.getByRole('button', { name: 'Undo' }).hasAttribute('disabled')).toBe(true);
@@ -524,7 +561,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const date = await screen.findByLabelText('Date');
     fireEvent.change(date, { target: { value: '' } });
     fireEvent.keyDown(date.closest('aside')!, { key: 's', ctrlKey: true });
@@ -543,7 +580,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const editor = await screen.findByRole('dialog');
     const style = within(editor).getByRole('combobox', { name: 'Style' });
     fireEvent.change(style, { target: { value: '' } });
@@ -560,7 +597,7 @@ describe('App', () => {
     );
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const title = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(title, { target: { value: 'Unsaved' } });
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
@@ -599,7 +636,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const addTags = await screen.findByRole('combobox', { name: 'Add tags' });
     fireEvent.change(addTags, { target: { value: 'Viradinha' } });
     fireEvent.keyDown(addTags.closest('aside')!, { key: 's', ctrlKey: true });
@@ -608,6 +645,27 @@ describe('App', () => {
         addTagIds: ['viradinha'],
       }),
     );
+  });
+
+  it('shows the mixed cue for an untouched bulk date', async () => {
+    api({
+      getVideoDetails: async (id) => ({
+        ...apiDetails(id),
+        eventDate: id === 'vid-1' ? '2024-05-01' : '2024-06-10',
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Edit (2)' }).hasAttribute('disabled')).toBe(false),
+    );
+    await openEditorAfterSelection();
+
+    const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
+    const date = within(editor).getByLabelText('Date (mixed or unchanged)');
+    expect(date.parentElement?.querySelector('small')?.textContent).toBe('— Mixed / unchanged —');
   });
 
   it('tabs through the whole bulk form without accepting autocomplete suggestions', async () => {
@@ -623,7 +681,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const addTags = await screen.findByRole('combobox', { name: 'Add tags' });
     fireEvent.change(addTags, { target: { value: 'Viradinha' } });
     const suggestion = await screen.findByRole('option', { name: 'Afro' });
@@ -655,7 +713,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const tags = await screen.findByRole('combobox', { name: 'Tags (comma separated)' });
     fireEvent.change(tags, { target: { value: 'mus' } });
     expect(await screen.findByRole('option', { name: 'Musicality' })).toBeTruthy();
@@ -678,7 +736,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const tags = await screen.findByRole('combobox', { name: 'Tags (comma separated)' });
     fireEvent.change(tags, { target: { value: 'Sal' } });
     await waitFor(() => expect(searchCatalogValues).toHaveBeenCalledWith('tag', 'Sal'));
@@ -702,7 +760,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const editor = await screen.findByRole('dialog');
     const style = within(editor).getByRole('combobox', { name: 'Style' });
     fireEvent.change(style, { target: { value: 'Zo' } });
@@ -735,7 +793,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const picker = await screen.findByRole('combobox', { name: 'Find lesson or demo' });
     fireEvent.keyDown(picker, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -769,7 +827,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const event = await screen.findByRole('textbox', { name: 'Event' });
     fireEvent.change(event, { target: { value: 'Changed event' } });
     fireEvent.click(screen.getByRole('button', { name: 'Leave event unchanged' }));
@@ -807,7 +865,7 @@ describe('App', () => {
           .every((item) => item.getAttribute('aria-selected') === 'true'),
       ).toBe(true),
     );
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const removeTags = await screen.findByRole('combobox', { name: 'Remove tags' });
     fireEvent.change(screen.getByRole('combobox', { name: 'Add tags' }), {
       target: { value: 'Practice' },
@@ -829,7 +887,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
 
     const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
     const style = within(editor).getByRole('combobox', { name: 'Style' });
@@ -876,7 +934,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
 
     const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
     const style = within(editor).getByRole('combobox', { name: 'Style' });
@@ -916,7 +974,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
     fireEvent.click(within(editor).getByRole('button', { name: 'Clear style on all' }));
     fireEvent.click(within(editor).getByRole('button', { name: 'Clear date on all' }));
@@ -948,7 +1006,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
     for (const name of ['Title', 'Event', 'Notes']) {
       const field = within(editor).getByRole('textbox', { name });
@@ -980,7 +1038,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
     for (const field of ['title', 'event', 'notes']) {
       fireEvent.click(within(editor).getByRole('button', { name: `Clear ${field} on all` }));
@@ -1016,7 +1074,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const editor = await screen.findByRole('dialog', { name: 'Bulk edit 2 videos' });
     for (const field of ['title', 'event', 'notes']) {
       const label = field === 'event' ? 'Event' : field[0]!.toUpperCase() + field.slice(1);
@@ -1037,11 +1095,16 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'lesson-basic.mp4' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'e' });
+    await openEditorAfterSelection();
     const title = await screen.findByRole('textbox', { name: 'Title' });
     fireEvent.change(title, { target: { value: 'Edited' } });
     fireEvent.keyDown(title.closest('aside')!, { key: 's', ctrlKey: true });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() =>
+      expect(
+        screen.getByRole('option', { name: /lesson-basic\.mp4/ }).getAttribute('aria-selected'),
+      ).toBe('true'),
+    );
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     expect(screen.getByRole('option', { name: /gone\.mp4/ }).getAttribute('aria-selected')).toBe(
       'true',
